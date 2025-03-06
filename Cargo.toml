@@ -1,0 +1,31 @@
+[package]
+name = "secure_store"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "create_db"
+path = "src/create_db.rs"
+
+[[bin]]
+name = "secure_store"
+path = "src/main.rs"
+
+[dependencies]
+actix-web = "4.0"
+actix-rt = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.1", features = ["v4", "serde"] }
+dotenv = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1.0", features = ["full"] }
+env_logger = "0.10"
+actix = "0.13"
+actix-web-actors = "4.1"
+actix-cors = "0.6"
+futures = "0.3"
+log = "0.4"
+rand = "0.8"
+bcrypt = "0.13"
+sqlx = { version = "0.7", features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "chrono", "uuid"] }
