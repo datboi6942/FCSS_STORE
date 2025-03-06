@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    import authStore from '../stores/auth.js';
+    import { auth } from '../stores/auth.js';
+    import { apiCall } from '../api.js';
     
     let products = [];
     let newProduct = { name: '', description: '', price: 0, available: true };
@@ -10,7 +11,7 @@
     async function fetchProducts() {
       try {
         loading = true;
-        const res = await fetch('http://127.0.0.1:8443/products');
+        const res = await apiCall('/products');
         if (!res.ok) throw new Error('Failed to fetch products');
         products = await res.json();
         error = null;
@@ -24,12 +25,8 @@
   
     async function addProduct() {
       try {
-        const res = await fetch('http://127.0.0.1:8443/products', {
+        const res = await apiCall('/products', {
           method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${$authStore.user?.token || ''}`
-          },
           body: JSON.stringify(newProduct)
         });
         
