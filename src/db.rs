@@ -4,42 +4,35 @@ use log::info;
 use std::{fs, path::Path};
 
 pub async fn create_pool() -> SqlitePool {
-    info!("Creating file-based SQLite database pool");
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./data/sqlite.db".to_string());
     
-    // Ensure the database directory exists
-    let data_dir = "./data";
-    fs::create_dir_all(data_dir).unwrap_or_else(|e| {
-        info!("Directory exists or created: {}", e);
-    });
+    // Retry database connection multiple times
+    let max_retries = 5;
+    let retry_delay = std::time::Duration::from_secs(1);
     
-    // Build the database path
-    let db_path = Path::new(data_dir).join("secure_store.db");
-    let db_path_str = db_path.to_str().unwrap();
-    
-    // Explicitly create an empty file if it doesn't exist
-    if !db_path.exists() {
-        fs::File::create(&db_path).expect("Failed to create database file");
-        info!("Created new database file at {}", db_path_str);
+    for attempt in 1..=max_retries {
+        match SqlitePoolOptions::new()
+            .max_connections(10)  // Increase connection pool size
+            .min_connections(2)   // Keep min connections ready
+            .connect(&db_url)
+            .await
+        {
+            Ok(pool) => {
+                log::info!("Database connection established (attempt {}/{})", attempt, max_retries);
+                return pool;
+            }
+            Err(e) => {
+                log::warn!("Failed to connect to database (attempt {}/{}): {}", attempt, max_retries, e);
+                if attempt < max_retries {
+                    tokio::time::sleep(retry_delay).await;
+                } else {
+                    panic!("Failed to connect to database after {} attempts: {}", max_retries, e);
+                }
+            }
+        }
     }
     
-    // Set permissive permissions on Unix systems
-    #[cfg(unix)]
-    {
-        use std::process::Command;
-        let _ = Command::new("chmod")
-            .args(&["666", db_path_str])
-            .output();
-    }
-    
-    // Connect with SQLite's create if not exists mode
-    let database_url = format!("sqlite:{}", db_path_str);
-    info!("Connecting to database at {}", database_url);
-    
-    SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("Failed to create database pool")
+    unreachable!();
 }
 
 // We won't use this function anymore as setup_db handles everything

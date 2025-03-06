@@ -10,6 +10,7 @@ mod products;
 mod db; // New database module
 mod setup_db;
 mod middleware;
+mod cart;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger};
 use std::sync::{Mutex, Arc};
@@ -18,10 +19,13 @@ use sqlx::SqlitePool;
 use dotenv::dotenv;
 use actix_web::http::header;
 use log;
+use std::collections::HashMap;
+use crate::cart::CartStore;
 
 pub struct AppState {
     pub db: SqlitePool,
     pub chat_history: Arc<Mutex<Vec<chat::ChatMessage>>>,
+    pub carts: CartStore,
 }
 
 async fn index() -> impl Responder {
@@ -61,6 +65,10 @@ async fn index() -> impl Responder {
     HttpResponse::Ok().content_type("text/html").body(html_content)
 }
 
+async fn health_check() -> impl Responder {
+    HttpResponse::Ok().body("OK")
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -97,10 +105,14 @@ async fn main() -> std::io::Result<()> {
     // Initialize chat history
     let chat_history = Arc::new(Mutex::new(Vec::new()));
     
+    // Initialize cart store
+    let carts = Mutex::new(HashMap::new());
+    
     // Create app state
     let app_state = web::Data::new(AppState {
         db: pool,
         chat_history,
+        carts,
     });
     
     // Add auto-purge system
@@ -109,26 +121,31 @@ async fn main() -> std::io::Result<()> {
         auto_purge::start_auto_purge(app_state_clone).await;
     });
 
+    // Add the waiting delay before starting the server
+    log::info!("Server starting, waiting for all components to initialize...");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    log::info!("Server ready at http://127.0.0.1:5000");
+
     // Start HTTP server
-    log::info!("Starting HTTP server at http://127.0.0.1:8443");
+    log::info!("Starting HTTP server at http://127.0.0.1:5000");
     HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("http://localhost:3000")
             .allowed_origin("http://127.0.0.1:3000")
             .allowed_origin("http://localhost:5000")
             .allowed_origin("http://127.0.0.1:5000")
-            .allowed_origin("http://localhost:5173") 
-            .allowed_origin("http://127.0.0.1:5173") 
-            .allowed_methods(vec!["GET", "POST"])
+            .allowed_origin("http://localhost:5173")
+            .allowed_origin("http://127.0.0.1:5173")
+            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
             .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
-            .max_age(3600);
+            .supports_credentials();
         
         App::new()
             .wrap(Logger::default())
             .wrap(cors)
             .app_data(app_state.clone())
             .route("/", web::get().to(index))
-            .route("/health", web::get().to(|| async { HttpResponse::Ok().body("OK") }))
+            .route("/health", web::get().to(health_check))
             // Auth routes
             .service(auth::init_routes())
             // Order routes
@@ -146,12 +163,14 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/products")
                     .route("", web::get().to(products::list_products))
                     .route("", web::post().to(products::add_product))
+                    .route("/purchase", web::post().to(products::purchase_product))
             )
             // Payment routes
             .service(
                 web::scope("/payment")
                     .route("/initiate", web::post().to(payment::initiate_payment))
                     .route("/verify", web::post().to(payment::verify_payment))
+                    .route("/crypto/confirm", web::post().to(payment::confirm_crypto_payment))
             )
             // Chat routes
             .service(
@@ -159,8 +178,10 @@ async fn main() -> std::io::Result<()> {
                     .route("", web::get().to(chat::chat_handler))
                     .route("/message", web::post().to(chat::post_message))
             )
+            // Cart routes
+            .service(cart::init_routes())
     })
-    .bind("0.0.0.0:8443")?
+    .bind("0.0.0.0:5000")?
     .run()
     .await
 }

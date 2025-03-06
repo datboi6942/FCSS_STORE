@@ -329,3 +329,46 @@ pub async fn order_history(data: web::Data<crate::AppState>, req: HttpRequest) -
         Err(e) => HttpResponse::Unauthorized().json(serde_json::json!({"error": format!("Invalid token: {}", e)})),
     }
 }
+
+// Add this new function to create a test order for admin panel verification
+pub async fn create_test_order(state: web::Data<AppState>) -> impl Responder {
+    // Generate unique values to prove this is a new DB entry
+    let order_id = format!("ord-test-{}", Uuid::new_v4().simple());
+    let now = chrono::Utc::now();
+    
+    // Create a variable to hold the formatted string
+    let status = format!("test-{}", now.timestamp());
+    
+    // Insert new test order
+    let result = sqlx::query!(
+        "INSERT INTO orders (id, user_id, product_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
+        order_id,
+        "usr-user1",
+        "prod-1",
+        status,  // Use the variable instead of the format! call directly
+        now
+    )
+    .execute(&state.db)
+    .await;
+    
+    match result {
+        Ok(_) => {
+            info!("Test order created successfully: {}", order_id);
+            HttpResponse::Created().json(
+                serde_json::json!({
+                    "id": order_id,
+                    "user_id": "usr-user1",
+                    "product_id": "prod-1",
+                    "status": status,
+                    "created_at": now
+                })
+            )
+        }
+        Err(e) => {
+            error!("Failed to create test order: {}", e);
+            HttpResponse::InternalServerError().json(
+                serde_json::json!({"error": "Failed to create test order"})
+            )
+        }
+    }
+}

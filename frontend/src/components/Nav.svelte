@@ -11,6 +11,10 @@
     window.location.hostname === 'localhost' || 
     window.location.hostname === '127.0.0.1';
   
+  // Add this to track cart items count
+  let cartItemsCount = 0;
+  const API_BASE_URL = 'http://localhost:5000';
+  
   // Subscribe to auth store changes
   onMount(() => {
     const unsubscribe = auth.subscribe(authData => {
@@ -47,7 +51,7 @@
       }
       
       // Regular token - fetch from server
-      const response = await fetch('http://localhost:8443/auth/profile', {
+      const response = await fetch('http://localhost:5000/auth/profile', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -66,6 +70,58 @@
   
   function logout() {
     auth.logout();
+  }
+  
+  // Cart polling logic
+  onMount(() => {
+    // Initial cart fetch
+    if ($auth.isAuthenticated) {
+      fetchCartCount();
+    }
+    
+    // Set up cart polling interval
+    const cartInterval = setInterval(() => {
+      if ($auth.isAuthenticated) {
+        console.log("Polling cart count");
+        fetchCartCount();
+      }
+    }, 5000);
+    
+    // Set up auth subscription for cart updates
+    const authUnsubscribe = auth.subscribe(value => {
+      if (value.isAuthenticated) {
+        fetchCartCount();
+      } else {
+        cartItemsCount = 0;
+      }
+    });
+    
+    // Clean up on component unmount
+    return () => {
+      clearInterval(cartInterval);
+      authUnsubscribe();
+    };
+  });
+  
+  async function fetchCartCount() {
+    try {
+      if (!$auth.user?.id) return;
+      
+      const response = await fetch(`${API_BASE_URL}/cart/${$auth.user.id}`, {
+        headers: {
+          'Authorization': $auth.token ? `Bearer ${$auth.token}` : '',
+        }
+      });
+      
+      if (response.ok) {
+        const cart = await response.json();
+        if (cart && cart.items) {
+          cartItemsCount = cart.items.reduce((total, item) => total + item.quantity, 0);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching cart:', error);
+    }
   }
 </script>
 
@@ -86,6 +142,12 @@
         {/if}
         
         <a href="/profile">{username}</a>
+        <a href="/cart" class="cart-link">
+          Cart
+          {#if cartItemsCount > 0}
+            <span class="cart-badge">{cartItemsCount}</span>
+          {/if}
+        </a>
         <button on:click={logout}>Logout</button>
       {:else}
         <a href="/login">Login</a>
@@ -138,5 +200,27 @@
     padding: 0.5rem 1rem;
     border-radius: 4px;
     cursor: pointer;
+  }
+  
+  /* Cart Badge Styling */
+  .cart-link {
+    position: relative;
+    padding-right: 8px;
+  }
+  
+  .cart-badge {
+    position: absolute;
+    top: -10px;
+    right: -10px;
+    background-color: #e74c3c;
+    color: white;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: bold;
   }
 </style> 

@@ -199,10 +199,91 @@ pub async fn verify_payment(
     }
 }
 
+pub async fn confirm_crypto_payment(
+    payment_conf: web::Json<CryptoPaymentConfirmation>,
+    state: web::Data<AppState>,
+) -> impl Responder {
+    let confirmation = payment_conf.into_inner();
+    
+    info!("Confirming crypto payment for order: {}, tx_hash: {}", 
+          confirmation.order_id, confirmation.transaction_hash);
+    
+    // In a real system, you would verify the transaction on the blockchain
+    // For demonstration, we'll assume the payment is valid
+    
+    // Update the order status
+    let update_result = sqlx::query!(
+        "UPDATE orders SET status = ? WHERE id = ?",
+        "paid", // Change to "completed" if you want to mark it as fulfilled immediately
+        confirmation.order_id
+    )
+    .execute(&state.db)
+    .await;
+    
+    match update_result {
+        Ok(_) => {
+            // Create a transaction record
+            let transaction_id = format!("txn-{}", Uuid::new_v4().simple());
+            let now = Utc::now();
+            
+            let transaction_result = sqlx::query!(
+                r#"
+                INSERT INTO transactions 
+                (id, order_id, amount, status, payment_method, session_id, currency, created_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+                transaction_id,
+                confirmation.order_id,
+                confirmation.amount,
+                "completed",
+                "crypto",
+                confirmation.transaction_hash,
+                confirmation.currency,
+                now
+            )
+            .execute(&state.db)
+            .await;
+            
+            match transaction_result {
+                Ok(_) => {
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "success": true,
+                        "order_id": confirmation.order_id,
+                        "transaction_id": transaction_id,
+                        "status": "paid"
+                    }))
+                },
+                Err(e) => {
+                    error!("Failed to create transaction record: {}", e);
+                    HttpResponse::InternalServerError().json(
+                        serde_json::json!({"error": "Payment confirmed but failed to create transaction record"})
+                    )
+                }
+            }
+        },
+        Err(e) => {
+            error!("Failed to update order status: {}", e);
+            HttpResponse::InternalServerError().json(
+                serde_json::json!({"error": "Failed to update order status"})
+            )
+        }
+    }
+}
+
+// Define the confirmation structure
+#[derive(Deserialize)]
+pub struct CryptoPaymentConfirmation {
+    pub order_id: String,
+    pub amount: f64,
+    pub currency: String,
+    pub transaction_hash: String,
+}
+
 pub fn init_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/payment")
             .route("/initiate", web::post().to(initiate_payment))
             .route("/verify", web::post().to(verify_payment))
+            .route("/confirm-crypto", web::post().to(confirm_crypto_payment))
     );
 }

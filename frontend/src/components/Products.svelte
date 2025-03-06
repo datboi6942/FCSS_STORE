@@ -1,80 +1,517 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { auth } from '../stores/auth.js';
-    import { apiCall } from '../api.js';
-    import { authStore } from '../stores/authStore';
+    import ProductCard from './ProductCard.svelte';
     
+    // Direct API URL
+    const API_URL = 'http://localhost:5000/products';
     let products = [];
     let newProduct = { name: '', description: '', price: 0, available: true };
     let loading = true;
     let error = null;
+    let offlineMode = false;
+    let serverStatus = "unknown"; // "online", "offline", or "unknown"
   
-    async function fetchProducts() {
+    // Fallback products when API fails
+    const fallbackProducts = [
+      { 
+        id: "fb1", 
+        name: "Deluxe Crypto Hardware Wallet", 
+        description: "Secure your cryptocurrency with military-grade encryption and biometric protection.", 
+        price: 149.99, 
+        available: true 
+      },
+      { 
+        id: "fb2", 
+        name: "Ultra-Secure Password Manager", 
+        description: "Store all your passwords with end-to-end encryption and zero-knowledge architecture.", 
+        price: 79.99, 
+        available: true 
+      },
+      { 
+        id: "fb3", 
+        name: "Privacy VPN Premium", 
+        description: "Browse the internet with complete anonymity and no activity logs.", 
+        price: 99.99, 
+        available: true 
+      }
+    ];
+  
+    // Queue for pending product additions
+    let pendingProducts = [];
+    let syncInProgress = false;
+  
+    // Load pending products from localStorage
+    function loadPendingProducts() {
       try {
-        loading = true;
-        const res = await apiCall('/products');
-        if (!res.ok) throw new Error('Failed to fetch products');
-        products = await res.json();
-        error = null;
+        const stored = localStorage.getItem('pendingProducts');
+        if (stored) {
+          pendingProducts = JSON.parse(stored);
+          console.log(`Loaded ${pendingProducts.length} pending products from storage`);
+        }
       } catch (err) {
-        error = err.message;
-        console.error(err);
-      } finally {
-        loading = false;
+        console.error("Error loading pending products:", err);
+        pendingProducts = [];
       }
     }
   
+    // Save pending products to localStorage
+    function savePendingProducts() {
+      localStorage.setItem('pendingProducts', JSON.stringify(pendingProducts));
+      console.log(`Saved ${pendingProducts.length} pending products to storage`);
+    }
+  
+    // Add a product to the pending queue
+    function addToPendingQueue(product) {
+      // Add timestamp and ID if not present
+      const productToQueue = {
+        ...product,
+        id: product.id || `pending-${Date.now()}`,
+        queued_at: new Date().toISOString()
+      };
+      
+      pendingProducts.push(productToQueue);
+      savePendingProducts();
+      
+      // Also add to local products array for immediate display
+      products = [...products, productToQueue];
+    }
+  
+    // Try to sync pending products with server
+    async function syncPendingProducts() {
+      if (syncInProgress || pendingProducts.length === 0) return;
+      
+      syncInProgress = true;
+      console.log(`Attempting to sync ${pendingProducts.length} pending products`);
+      
+      // Keep track of products that were successfully synced
+      const syncedProducts = [];
+      
+      for (const product of pendingProducts) {
+        try {
+          console.log(`Syncing product: ${product.name}`);
+          
+          // Remove any temporary IDs or metadata
+          const { id, queued_at, ...productData } = product;
+          
+          const response = await fetch(API_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
+            },
+            body: JSON.stringify(productData)
+          });
+          
+          if (response.ok) {
+            console.log(`Successfully synced product: ${product.name}`);
+            syncedProducts.push(product);
+          } else {
+            console.error(`Failed to sync product: ${product.name}`);
+          }
+        } catch (err) {
+          console.error(`Error syncing product ${product.name}:`, err);
+          // Continue with next product
+        }
+      }
+      
+      // Remove synced products from pending queue
+      if (syncedProducts.length > 0) {
+        pendingProducts = pendingProducts.filter(p => 
+          !syncedProducts.some(sp => sp.id === p.id)
+        );
+        savePendingProducts();
+        
+        // Reload products from server to get proper IDs
+        await fetchProducts();
+        
+        alert(`Successfully synchronized ${syncedProducts.length} products with the server.`);
+      }
+      
+      syncInProgress = false;
+    }
+  
+    // Simplified cart update handler
+    function handleCartUpdated() {
+      console.log("Cart updated in Products");
+    }
+  
+    // Add a more robust fetchProducts function with retries
+    async function fetchProducts() {
+      let retries = 3;
+      let lastError = null;
+      
+      while (retries > 0) {
+        try {
+          loading = true;
+          error = null;
+          
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
+          
+          console.log(`Fetching products (attempt ${4-retries}/3)...`);
+          
+          const response = await fetch(API_URL, {
+            signal: controller.signal,
+            headers: {
+              'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
+            }
+          });
+          
+          clearTimeout(timeoutId);
+          
+          if (!response.ok) {
+            throw new Error(`Server returned ${response.status}`);
+          }
+          
+          const data = await response.json();
+          console.log(`Got products: ${data.length}`);
+          
+          // Success - update products and exit retry loop
+          products = data;
+          loading = false;
+          
+          // Check server status after successful fetch
+          checkServerStatus();
+          
+          return;
+        } catch (err) {
+          lastError = err;
+          console.warn(`Fetch attempt failed (${retries} retries left): ${err.message}`);
+          retries--;
+          
+          // Wait before retrying
+          if (retries > 0) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+      }
+      
+      // If we get here, all retries failed
+      console.error("Error loading products:", lastError);
+      error = `Failed to load products: ${lastError?.message}`;
+      loading = false;
+      
+      // Fall back to offline mode
+      useOfflineMode();
+    }
+  
+    // Call fetchProducts directly on mount
+    onMount(() => {
+      console.log("Products component mounted");
+      loadPendingProducts();
+      setTimeout(fetchProducts, 100);
+      
+      // Check server status immediately
+      checkServerStatus();
+      
+      // Set up periodic server status check
+      const statusInterval = setInterval(checkServerStatus, 10000); // Every 10 seconds
+      
+      // Set up connectivity check interval
+      const checkInterval = setInterval(() => {
+        if (offlineMode && pendingProducts.length > 0) {
+          // Try to connect to the server periodically
+          fetch(API_URL, { method: 'HEAD', timeout: 2000 })
+            .then(() => {
+              console.log("Server connectivity restored");
+              offlineMode = false;
+              syncPendingProducts();
+            })
+            .catch(() => {
+              // Still offline
+            });
+        }
+      }, 30000); // Check every 30 seconds
+      
+      return () => {
+        clearInterval(checkInterval);
+        clearInterval(statusInterval);
+      };
+    });
+  
+    // Admin function to add new product
     async function addProduct() {
       try {
-        const res = await apiCall('/products', {
-          method: 'POST',
-          body: JSON.stringify(newProduct)
-        });
+        console.log("Adding new product:", newProduct);
         
-        if (!res.ok) throw new Error('Failed to add product');
+        // Clear any previous errors
+        error = null;
         
-        await fetchProducts();
-        newProduct = { name: '', description: '', price: 0, available: true };
+        // Validate input
+        if (!newProduct.name || !newProduct.description || newProduct.price <= 0) {
+          error = "Please fill out all fields with valid values";
+          return;
+        }
+        
+        // Create a copy of the product to avoid reference issues
+        const productToAdd = { ...newProduct };
+        
+        // For offline mode, queue the product
+        if (offlineMode) {
+          console.log("Offline mode - adding product to pending queue");
+          addToPendingQueue(productToAdd);
+          alert("Product saved to queue. It will be synchronized with the server when connection is restored.");
+          
+          // Reset form
+          newProduct = { name: '', description: '', price: 0, available: true };
+          return;
+        }
+        
+        // For online mode, try the API with a timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
+        try {
+          const response = await fetch(API_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
+            },
+            body: JSON.stringify(productToAdd),
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          
+          if (!response.ok) {
+            throw new Error('Failed to add product');
+          }
+          
+          // If successful, get the product data from the response
+          try {
+            const serverProduct = await response.json();
+            // Add the server-assigned ID and other properties
+            products = [...products, serverProduct];
+          } catch (err) {
+            // If we can't parse the response, just add the product with a temp ID
+            const tempId = Date.now().toString();
+            products = [...products, {...productToAdd, id: tempId}];
+          }
+          
+          // Reset form
+          newProduct = { name: '', description: '', price: 0, available: true };
+          
+          alert("Product added successfully!");
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            // If server request times out, add to pending queue
+            console.log("Server timeout, adding product to pending queue");
+            offlineMode = true;
+            addToPendingQueue(productToAdd);
+            alert("Server connection timed out. Product saved to queue and will be synchronized when connection is restored.");
+            
+            // Reset form
+            newProduct = { name: '', description: '', price: 0, available: true };
+          } else {
+            throw err;
+          }
+        }
       } catch (err) {
         error = err.message;
-        console.error(err);
+        console.error("Error adding product:", err);
       }
     }
   
-    onMount(() => {
-      fetchProducts();
-    });
+    // Add a function to check if a product is from the database or local
+    function isProductInDatabase(product) {
+      // Products from the database will have a real ID, not a pending- or local- prefix
+      return product.id && !product.id.startsWith('pending-') && !product.id.startsWith('local-') && !product.id.startsWith('fb');
+    }
+  
+    // Get all product IDs from database to verify which products exist
+    async function verifyDatabaseProducts() {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
+        console.log("Verifying products in database...");
+        
+        const response = await fetch(`${API_URL}/ids`, {
+          signal: controller.signal,
+          headers: {
+            'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
+          }
+        }).catch(err => {
+          if (err.name === 'AbortError') {
+            throw new Error('Request timed out');
+          }
+          throw err;
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status}`);
+        }
+        
+        const dbIds = await response.json();
+        console.log("Database product IDs:", dbIds);
+        
+        // Update products to show which are in the database
+        products = products.map(product => ({
+          ...product,
+          inDatabase: dbIds.includes(product.id)
+        }));
+        
+        return dbIds;
+      } catch (err) {
+        console.error("Error verifying database products:", err);
+        return null;
+      }
+    }
+  
+    // Update the checkServerStatus function to work around CORS limitations
+    async function checkServerStatus() {
+      try {
+        console.log("Starting server status check without CORS checks...");
+        
+        // Instead of directly checking server status, use the products that we already fetched
+        // If products were fetched successfully, the server must be online
+        if (products.length > 0 && products.some(p => !p.id.startsWith('fb'))) {
+          // We have at least one non-fallback product, server must be online
+          serverStatus = "online";
+          console.log("Server is online (detected from product data)");
+          
+          // If we can infer the server is online, we should also update offline mode
+          if (offlineMode) {
+            console.log("Server connection restored, enabling online mode");
+            offlineMode = false;
+            
+            // Try to sync pending products if we have any
+            if (pendingProducts.length > 0) {
+              setTimeout(() => syncPendingProducts(), 1000);
+            }
+          }
+          
+          return true;
+        }
+        
+        // No real products found, server might be offline
+        serverStatus = "offline";
+        console.log("Server appears to be offline (no real products found)");
+        return false;
+        
+      } catch (err) {
+        serverStatus = "offline";
+        console.log("Server status check error:", err.message);
+        return false;
+      }
+    }
 </script>
 
 <div class="products-container">
-  <h2>Our Products</h2>
+  <div class="products-header">
+    <h1>Our Products</h1>
+    <div class="header-actions">
+      <div class="server-status {serverStatus}">
+        Server: 
+        {#if serverStatus === "online"}
+          <span class="status-indicator online">🟢 Online</span>
+        {:else if serverStatus === "offline"}
+          <span class="status-indicator offline">🔴 Offline</span>
+        {:else}
+          <span class="status-indicator unknown">⚪ Checking...</span>
+        {/if}
+      </div>
+      <button class="refresh-btn" on:click={fetchProducts}>
+        Refresh Products
+      </button>
+    </div>
+  </div>
+  
+  <!-- Only show debug info in development mode -->
+  {#if window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'}
+    <div class="debug-info">
+      <p>Loading: {loading}</p>
+      <p>Error: {error}</p>
+      <p>Products count: {products.length}</p>
+      <p>Offline mode: {offlineMode ? 'Yes' : 'No'}</p>
+      <p>Pending products: {pendingProducts.length}</p>
+    </div>
+  {/if}
   
   {#if loading}
-    <p>Loading products...</p>
-  {:else if error}
-    <div class="error-message">
-      <p>{error}</p>
-      <button on:click={fetchProducts}>Try Again</button>
+    <div class="loading">Loading products...</div>
+  {:else if error && products.length === 0}
+    <div class="error">
+      <p>Error: {error}</p>
+      <button on:click={() => fetchProducts()}>Retry</button>
     </div>
   {:else if products.length === 0}
-    <p>No products available.</p>
+    <div class="no-products">No products available.</div>
   {:else}
-    <div class="product-grid">
-      {#each products as product}
-        <div class="product-card">
-          <h3>{product.name}</h3>
-          <p>{product.description}</p>
-          <p class="price">${product.price}</p>
-          <p class="status">{product.available ? 'In Stock' : 'Out of Stock'}</p>
+    <!-- Show a nicer notification when using fallback products -->
+    {#if error}
+      <div class="fallback-notice">
+        <p>Note: {error}</p>
+        <button class="retry-btn" on:click={() => fetchProducts()}>Try again</button>
+      </div>
+    {/if}
+    
+    <div class="products-grid">
+      {#each products as product (product.id || Math.random())}
+        <div class="product-wrapper">
+          <ProductCard {product} on:cartUpdated={handleCartUpdated} />
+          <div class="product-status">
+            {#if isProductInDatabase(product)}
+              <span class="db-status stored">✓ In Database</span>
+            {:else if product.id && product.id.startsWith('pending-')}
+              <span class="db-status pending">⌛ Pending Sync</span>
+            {:else if product.id && product.id.startsWith('local-')}
+              <span class="db-status local">💾 Local Only</span>
+            {:else if product.id && product.id.startsWith('fb')}
+              <span class="db-status demo">👁️ Demo Product</span>
+            {:else}
+              <span class="db-status unknown">? Unknown Status</span>
+            {/if}
+          </div>
         </div>
       {/each}
     </div>
   {/if}
   
+  <!-- Add a sync button if there are pending products -->
+  {#if pendingProducts.length > 0}
+    <div class="sync-banner">
+      <p>You have {pendingProducts.length} product(s) waiting to be synchronized with the server.</p>
+      <button 
+        class="sync-button" 
+        on:click={syncPendingProducts} 
+        disabled={syncInProgress || offlineMode}
+      >
+        {#if syncInProgress}
+          Syncing...
+        {:else if offlineMode}
+          Offline (Sync Later)
+        {:else}
+          Sync Now
+        {/if}
+      </button>
+    </div>
+  {/if}
+  
   <!-- Only show for admin users -->
-  {#if $authStore.isAdmin}
+  {#if $auth.isAdmin}
     <div class="admin-section">
       <h3>Add New Product</h3>
+      
+      <!-- Add debug info for admin -->
+      {#if window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'}
+        <div class="admin-debug">
+          <p>Admin mode: {$auth.isAdmin ? 'Active' : 'Inactive'}</p>
+          <p>Token: {$auth.token ? 'Present' : 'Missing'}</p>
+          <p>Offline mode: {offlineMode ? 'Yes' : 'No'}</p>
+        </div>
+      {/if}
+      
+      {#if offlineMode}
+        <div class="admin-offline-notice">
+          <p>You are in demo mode. New products will only be saved locally.</p>
+        </div>
+      {/if}
+      
       <form on:submit|preventDefault={addProduct}>
         <div class="form-group">
           <label for="product-name">Name:</label>
@@ -98,51 +535,56 @@
           </label>
         </div>
         
+        <div class="admin-actions">
+          <button class="verify-btn" on:click={verifyDatabaseProducts}>
+            Verify Database Products
+          </button>
+        </div>
+        
         <button type="submit">Add Product</button>
       </form>
+      
+      {#if error}
+        <div class="admin-error">
+          {error}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
 
 <style>
   .products-container {
-    max-width: 1000px;
+    max-width: 1200px;
     margin: 0 auto;
+    padding: 20px;
   }
   
-  .product-grid {
+  .debug-info {
+    background: #f5f5f5;
+    padding: 10px;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    font-family: monospace;
+  }
+  
+  .loading, .error, .no-products {
+    text-align: center;
+    padding: 30px;
+    background: #f8f9fa;
+    border-radius: 5px;
+    margin: 20px 0;
+  }
+  
+  .error {
+    color: #e74c3c;
+    background: #fdecea;
+  }
+  
+  .products-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 1.5rem;
-    margin: 2rem 0;
-  }
-  
-  .product-card {
-    background: white;
-    border-radius: 8px;
-    padding: 1.5rem;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    transition: transform 0.2s, box-shadow 0.2s;
-  }
-  
-  .product-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 5px 10px rgba(0, 0, 0, 0.1);
-  }
-  
-  .price {
-    font-weight: bold;
-    color: #1e90ff;
-    font-size: 1.2rem;
-  }
-  
-  .status {
-    display: inline-block;
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    background: #e6f7ff;
-    color: #1e90ff;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
   }
   
   .admin-section {
@@ -187,11 +629,182 @@
     background: #167edb;
   }
   
-  .error-message {
-    color: #e74c3c;
-    background: #fadbd8;
-    padding: 1rem;
+  @media (max-width: 768px) {
+    .products-grid {
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    }
+  }
+  
+  .fallback-notice {
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 10px 15px;
+    margin-bottom: 20px;
     border-radius: 4px;
-    margin: 1rem 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .retry-btn {
+    background: #ffc107;
+    color: #212529;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  
+  .retry-btn:hover {
+    background: #e0a800;
+  }
+  
+  .admin-debug {
+    background: #f8f9fa;
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin-bottom: 15px;
+    font-family: monospace;
+    font-size: 12px;
+  }
+  
+  .admin-offline-notice {
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 10px 15px;
+    margin-bottom: 15px;
+    border-radius: 0 4px 4px 0;
+  }
+  
+  .admin-error {
+    color: #721c24;
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
+    padding: 10px;
+    border-radius: 4px;
+    margin-top: 15px;
+  }
+  
+  .sync-banner {
+    background: #e3f2fd;
+    border-left: 4px solid #2196f3;
+    padding: 10px 15px;
+    margin: 20px 0;
+    border-radius: 0 4px 4px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .sync-button {
+    background: #2196f3;
+    color: white;
+    border: none;
+    padding: 8px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  
+  .sync-button:hover:not(:disabled) {
+    background: #1976d2;
+  }
+  
+  .sync-button:disabled {
+    background: #bbdefb;
+    cursor: not-allowed;
+  }
+  
+  .product-wrapper {
+    position: relative;
+  }
+  
+  .product-status {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+  }
+  
+  .db-status {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 20px;
+    color: white;
+    font-weight: bold;
+  }
+  
+  .db-status.stored {
+    background-color: #4caf50;
+  }
+  
+  .db-status.pending {
+    background-color: #ff9800;
+  }
+  
+  .db-status.local {
+    background-color: #9c27b0;
+  }
+  
+  .db-status.demo {
+    background-color: #2196f3;
+  }
+  
+  .db-status.unknown {
+    background-color: #607d8b;
+  }
+  
+  .products-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  
+  .header-actions {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+  }
+  
+  .server-status {
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  
+  .status-indicator {
+    font-weight: bold;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  
+  .status-indicator.online {
+    background-color: #d4edda;
+    color: #155724;
+  }
+  
+  .status-indicator.offline {
+    background-color: #f8d7da;
+    color: #721c24;
+  }
+  
+  .status-indicator.unknown {
+    background-color: #f8f9fa;
+    color: #6c757d;
+  }
+  
+  .refresh-btn {
+    padding: 8px 12px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  
+  .refresh-btn:hover {
+    background-color: #0069d9;
   }
 </style>

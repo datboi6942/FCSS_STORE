@@ -93,4 +93,20 @@ export function login(userData) {
 export function logout() {
   console.log("Logout function called");
   auth.logout();
-} 
+}
+
+// Helper function for debouncing operations
+function debounce(func, timeout = 300) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { 
+      if (typeof func === 'function') {
+        func.apply(this, args);
+      }
+    }, timeout);
+  };
+}
+
+// Update API URL to port 5000
+const API_URL = 'http://localhost:5000'; 

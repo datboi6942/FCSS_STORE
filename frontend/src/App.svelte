@@ -16,12 +16,47 @@
   import ProtectedRoute from './components/ProtectedRoute.svelte';
   import UserProfile from './components/UserProfile.svelte';
   import ProductList from './components/Products.svelte'; // Using Products component as ProductList
+  import Cart from './components/Cart.svelte';
 
   // Dynamically import AdminPanel
   import { fade } from 'svelte/transition';
   let AdminPanel;
   
+  let serverReady = false;
+  
+  // Check if server is ready before initializing app components
+  async function checkServerReadiness() {
+    const maxRetries = 5;
+    const retryDelay = 2000;
+    
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const response = await fetch('http://localhost:5000/health', {
+          // Longer timeout for initial connection
+          signal: AbortSignal.timeout(5000)
+        });
+        
+        if (response.ok) {
+          console.log("Server is ready");
+          serverReady = true;
+          return true;
+        }
+      } catch (err) {
+        console.log(`Server not ready (attempt ${i+1}/${maxRetries}): ${err.message}`);
+      }
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+    }
+    
+    console.warn("Could not establish server connection after multiple attempts");
+    // Continue anyway with offline mode
+    serverReady = true;
+    return false;
+  }
+  
   onMount(async () => {
+    await checkServerReadiness();
     // Dynamically load the AdminPanel component
     const module = await import('./components/AdminPanel.svelte');
     AdminPanel = module.default;
@@ -89,6 +124,8 @@
         <a href="/">Return to Home</a>
       </div>
     </Route>
+    
+    <Route path="/cart" component={Cart} />
   </div>
 </Router>
 
@@ -164,3 +201,12 @@
     text-decoration: none;
   }
 </style>
+
+{#if serverReady}
+  <!-- Your app content here -->
+{:else}
+  <div class="loading-container">
+    <p>Connecting to server...</p>
+    <!-- Add loading spinner here -->
+  </div>
+{/if}
