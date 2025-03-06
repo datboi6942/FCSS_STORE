@@ -12,7 +12,7 @@ pub async fn admin_dashboard(req: HttpRequest) -> impl Responder {
         if let Ok(auth_str) = auth_header.to_str() {
             // Expect token format "Bearer <token>"
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                if session::verify_jwt(token) {
+                if let Ok(_claims) = session::verify_jwt(token) {
                     return HttpResponse::Ok().body("Admin Dashboard: Welcome, Admin!");
                 }
             }
@@ -26,7 +26,7 @@ pub async fn get_all_orders(data: web::Data<crate::AppState>, req: HttpRequest) 
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                if session::verify_jwt(token) {
+                if let Ok(_claims) = session::verify_jwt(token) {
                     // Use query instead of query! to have better control
                     let result = sqlx::query(
                         "SELECT id, user_id, product_id, status, created_at FROM orders"
@@ -80,7 +80,7 @@ pub async fn admin_panel(_data: web::Data<AppState>) -> impl Responder {
         </style>
       </head>
       <body>
-        <h1>Admin Panel</h1>
+        <h1>Admin Panel</h1>cargo build
         <p>This is a placeholder for the admin panel.</p>
         <p>In a production application, this would require proper authentication.</p>
       </body>

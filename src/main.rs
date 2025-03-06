@@ -9,12 +9,15 @@ mod session;
 mod products;
 mod db; // New database module
 mod setup_db;
+mod middleware;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger};
 use std::sync::{Mutex, Arc};
 use actix_cors::Cors;
 use sqlx::SqlitePool;
 use dotenv::dotenv;
+use middleware::JwtAuthentication;
+use actix_web::http::header;
 
 pub struct AppState {
     pub db: SqlitePool,
@@ -59,53 +62,86 @@ async fn index() -> impl Responder {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    dotenv().ok(); // Load .env file
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    // Load environment variables
+    dotenv().ok();
     
-    // Setup database
-    if let Err(e) = setup_db::setup().await {
-        log::error!("Failed to set up database: {}", e);
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "Database setup failed"));
-    }
+    // Configure logging
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
     
-    // Create database pool
-    let pool = db::create_pool().await;
+    log::info!("Starting up Secure Store server");
     
-    // Create application state with SQLite pool
+    // Database setup
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:secure_store.db".to_string());
+    let db_pool = SqlitePool::connect(&db_url)
+        .await
+        .expect("Failed to connect to SQLite");
+    
+    // Uncomment if you want to setup database tables
+    // setup_db::setup_database(&db_pool).await.expect("Failed to setup database");
+    
+    // Create app state
+    let chat_history = Arc::new(Mutex::new(Vec::<chat::ChatMessage>::new()));
     let app_data = web::Data::new(AppState {
-        db: pool,
-        chat_history: Arc::new(Mutex::new(Vec::new())),
+        db: db_pool.clone(),
+        chat_history,
     });
-
+    
+    // Start auto-purge task in background
+    let _ = auto_purge::spawn_purge_task(db_pool.clone());
+    
+    log::info!("Starting HTTP server at http://127.0.0.1:8443");
+    
     HttpServer::new(move || {
-        // Configure CORS
+        // Create CORS configuration inside the closure so each thread has its own
         let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header();
+            .allowed_origin("http://localhost:5173")  // Svelte dev server
+            .allowed_origin("http://localhost:3000")  // Alternative common dev port
+            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
+            .allowed_headers(vec![
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT
+            ])
+            .supports_credentials()
+            .max_age(3600);  // Cache preflight requests for 1 hour
             
         App::new()
             .wrap(Logger::default())
             .wrap(cors)
             .app_data(app_data.clone())
-            // Routes remain the same
+            // Public routes
             .route("/", web::get().to(index))
-            .service(web::scope("/auth")
-                .route("/register", web::post().to(auth::register))
-                .route("/login", web::post().to(auth::login)))
-            .service(web::scope("/order")
-                .route("", web::post().to(orders::create_order))
-                .route("/history", web::get().to(orders::order_history)))
-            .service(web::scope("/payment")
-                .route("/initiate", web::post().to(payment::initiate_payment))
-                .route("/verify", web::post().to(payment::verify_payment)))
-            .service(web::scope("/products")
-                .route("", web::get().to(products::list_products))
-                .route("", web::post().to(products::add_product)))
-            .route("/admin", web::get().to(admin::admin_panel))
+            .service(auth::init_routes())
+            // Protected routes with middleware
+            .service(
+                web::scope("/order")
+                    .wrap(JwtAuthentication)
+                    .route("", web::post().to(orders::create_order))
+                    .route("/history", web::get().to(orders::order_history))
+            )
+            .service(
+                web::scope("/payment")
+                    .wrap(JwtAuthentication)
+                    .route("/initiate", web::post().to(payment::initiate_payment))
+                    .route("/verify", web::post().to(payment::verify_payment))
+            )
+            .service(
+                web::scope("/products")
+                    .route("", web::get().to(products::list_products))
+                    .service(
+                        web::resource("")
+                            .wrap(JwtAuthentication)
+                            .route(web::post().to(products::add_product))
+                    )
+            )
+            .service(
+                web::scope("/admin")
+                    .wrap(JwtAuthentication)
+                    .route("", web::get().to(admin::admin_dashboard))
+            )
             .service(chat::init_routes())
     })
-    .bind("127.0.0.1:8443")?
+    .bind(("127.0.0.1", 8443))?
     .run()
     .await
 }

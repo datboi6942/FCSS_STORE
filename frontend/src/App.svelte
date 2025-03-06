@@ -7,14 +7,90 @@
   import Chat from './components/Chat.svelte';
   import Payment from './components/Payment.svelte';
   import Login from './components/Login.svelte';
+  import { Router, Route } from "svelte-routing";
+  import { onMount } from 'svelte';
+  import { auth } from './stores/auth.js';
+  
+  // Import missing components
+  import Nav from './components/Nav.svelte';
+  import ProtectedRoute from './components/ProtectedRoute.svelte';
+  import UserProfile from './components/UserProfile.svelte';
+  import ProductList from './components/Products.svelte'; // Using Products component as ProductList
 
-  // A simple store to hold the current view
+  // Dynamically import AdminPanel
+  import { fade } from 'svelte/transition';
+  let AdminPanel;
+  
+  onMount(async () => {
+    // Dynamically load the AdminPanel component
+    const module = await import('./components/AdminPanel.svelte');
+    AdminPanel = module.default;
+  });
+  
+  // For compatibility with the old navigation system
   const currentView = writable('home');
   
-  function setView(view: string): void {
+  function setView(view) {
     currentView.set(view);
   }
+
+  // Check if user is authenticated on page load
+  onMount(() => {
+    const token = localStorage.getItem('jwt');
+    if (token) {
+      // Verify token with backend
+      fetch('http://localhost:8443/auth/profile', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }).then(response => {
+        if (response.ok) {
+          auth.login(token);
+        } else {
+          // Token invalid
+          auth.logout();
+        }
+      }).catch(error => {
+        console.error('Auth check failed', error);
+        auth.logout();
+      });
+    }
+  });
 </script>
+
+<Router>
+  <Nav />
+  
+  <div class="container">
+    <Route path="/" component={ProductList} />
+    <Route path="/login" component={Login} />
+    <Route path="/products" component={ProductList} />
+    
+    <Route path="/profile">
+      <ProtectedRoute>
+        <UserProfile />
+      </ProtectedRoute>
+    </Route>
+    
+    <Route path="/admin">
+      <ProtectedRoute requiredRole="admin">
+        {#if AdminPanel}
+          <svelte:component this={AdminPanel} />
+        {:else}
+          <div class="loading">Loading admin panel...</div>
+        {/if}
+      </ProtectedRoute>
+    </Route>
+    
+    <Route path="/unauthorized">
+      <div class="unauthorized">
+        <h1>Unauthorized Access</h1>
+        <p>You don't have permission to access this page.</p>
+        <a href="/">Return to Home</a>
+      </div>
+    </Route>
+  </div>
+</Router>
 
 <main>
   <NavBar {setView} />
@@ -51,5 +127,40 @@
     margin-top: 2rem;
     color: #666;
     font-size: 0.9rem;
+  }
+
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    font-family: Arial, sans-serif;
+    background-color: #f9f9f9;
+  }
+  
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1rem;
+  }
+  
+  .loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 200px;
+  }
+  
+  .unauthorized {
+    text-align: center;
+    padding: 2rem;
+    background-color: #fff9fa;
+    border-radius: 8px;
+    margin-top: 2rem;
+  }
+  
+  .unauthorized a {
+    display: inline-block;
+    margin-top: 1rem;
+    color: #2196F3;
+    text-decoration: none;
   }
 </style>

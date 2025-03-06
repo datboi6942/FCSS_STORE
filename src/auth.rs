@@ -1,10 +1,13 @@
 // src/auth.rs
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpResponse, Responder, HttpRequest, HttpMessage};
 use serde::{Deserialize, Serialize};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::Utc;
 use uuid::Uuid;
 use crate::AppState;
+use crate::session;
+use crate::middleware::JwtAuthentication;
+use actix_web::http::header;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct User {
@@ -142,8 +145,16 @@ pub async fn login(
             // Verify password
             match verify(&user.password, &db_user.password_hash) {
                 Ok(valid) if valid => {
-                    // Generate a fake token (in real app, use JWT)
-                    let token = format!("token-{}", Uuid::new_v4());
+                    // Replace the placeholder token with proper JWT
+                    let token = match session::create_jwt(&db_user.id, &db_user.role) {
+                        Ok(token) => token,
+                        Err(e) => {
+                            log::error!("Failed to create JWT: {}", e);
+                            return HttpResponse::InternalServerError().json(
+                                serde_json::json!({"error": "Authentication error"})
+                            );
+                        }
+                    };
                     
                     HttpResponse::Ok().json(UserResponse {
                         id: db_user.id,
@@ -174,10 +185,60 @@ pub async fn login(
     }
 }
 
-pub fn init_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("/auth")
-            .route("/register", web::post().to(register))
-            .route("/login", web::post().to(login))
-    );
+pub async fn refresh_token(req: HttpRequest) -> impl Responder {
+    if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                match session::verify_jwt(token) {
+                    Ok(claims) => {
+                        // Generate new token with the same claims but extended expiration
+                        match session::create_jwt(&claims.sub, &claims.role) {
+                            Ok(new_token) => {
+                                return HttpResponse::Ok().json(serde_json::json!({
+                                    "token": new_token
+                                }));
+                            }
+                            Err(e) => {
+                                log::error!("Failed to create new token: {}", e);
+                                return HttpResponse::InternalServerError().json(
+                                    serde_json::json!({"error": "Failed to refresh token"})
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return HttpResponse::Unauthorized().json(
+                            serde_json::json!({"error": format!("Invalid token: {}", e)})
+                        );
+                    }
+                }
+            }
+        }
+    }
+    
+    HttpResponse::Unauthorized().json(serde_json::json!({"error": "Authorization header missing"}))
+}
+
+pub async fn get_user_profile(req: HttpRequest) -> impl Responder {
+    // Get claims from the request extensions
+    if let Some(claims) = req.extensions().get::<session::Claims>() {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "id": claims.sub,
+            "role": claims.role
+        }));
+    }
+    
+    HttpResponse::Unauthorized().json(serde_json::json!({"error": "Not authenticated"}))
+}
+
+pub fn init_routes() -> actix_web::Scope {
+    web::scope("/auth")
+        .route("/register", web::post().to(register))
+        .route("/login", web::post().to(login))
+        .route("/refresh", web::post().to(refresh_token))
+        .service(
+            web::resource("/profile")
+                .wrap(JwtAuthentication)
+                .route(web::get().to(get_user_profile))
+        )
 }

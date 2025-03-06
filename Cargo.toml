@@ -29,3 +29,5 @@ log = "0.4"
 rand = "0.8"
 bcrypt = "0.13"
 sqlx = { version = "0.7", features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "chrono", "uuid"] }
+jsonwebtoken = "8.1.1"
+futures-util = "0.3.28"

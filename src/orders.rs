@@ -1,7 +1,7 @@
 use actix_web::{web, HttpResponse, Responder, HttpRequest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{Utc, DateTime, TimeZone};
+use chrono::{Utc, DateTime};
 use crate::AppState;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
