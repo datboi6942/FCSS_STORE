@@ -6,14 +6,28 @@
   let username = '';
   let isAdmin = false;
   
+  // Check if connection is from localhost
+  const isLocalhost = 
+    window.location.hostname === 'localhost' || 
+    window.location.hostname === '127.0.0.1';
+  
   // Subscribe to auth store changes
   onMount(() => {
     const unsubscribe = auth.subscribe(authData => {
+      console.log("Nav: Auth data updated", authData);
       isLoggedIn = authData.isAuthenticated;
       
-      // If we have a token, fetch user profile
       if (authData.isAuthenticated) {
-        fetchUserProfile(authData.token);
+        // First check if this is admin directly from the auth store
+        if (authData.user && authData.user.role === 'admin') {
+          console.log("Nav: Admin user detected from auth store");
+          username = authData.user.username || 'Admin';
+          isAdmin = true;
+        } 
+        // For non-admin or to double-check, fetch profile
+        else if (authData.token) {
+          fetchUserProfile(authData.token);
+        }
       }
     });
     
@@ -21,7 +35,18 @@
   });
   
   async function fetchUserProfile(token) {
+    console.log("Nav: Fetching user profile with token", token);
+    
     try {
+      // Special case for admin token
+      if (token.startsWith('admin-token')) {
+        console.log("Nav: Admin token detected, skipping server validation");
+        username = 'Administrator';
+        isAdmin = true;
+        return;
+      }
+      
+      // Regular token - fetch from server
       const response = await fetch('http://localhost:8443/auth/profile', {
         headers: {
           'Authorization': `Bearer ${token}`
@@ -32,6 +57,7 @@
         const userData = await response.json();
         username = userData.username || 'User';
         isAdmin = userData.role === 'admin';
+        console.log("Nav: User profile fetched", username, isAdmin);
       }
     } catch (error) {
       console.error('Failed to fetch user profile', error);
@@ -53,9 +79,12 @@
       
       {#if isLoggedIn}
         <a href="/orders">My Orders</a>
-        {#if isAdmin}
+        
+        <!-- Only show admin link if user is admin AND on localhost -->
+        {#if isAdmin && isLocalhost}
           <a href="/admin">Admin Panel</a>
         {/if}
+        
         <a href="/profile">{username}</a>
         <button on:click={logout}>Logout</button>
       {:else}

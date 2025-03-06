@@ -4,7 +4,8 @@ import { writable } from 'svelte/store';
 const initialState = {
   isAuthenticated: false,
   token: null,
-  user: null
+  user: null,
+  isAdmin: false  // Added explicit isAdmin flag
 };
 
 // Check if we have existing auth in localStorage
@@ -12,10 +13,12 @@ function getInitialState() {
   if (typeof localStorage !== 'undefined') {
     const storedToken = localStorage.getItem('authToken');
     if (storedToken) {
+      const user = JSON.parse(localStorage.getItem('authUser') || '{}');
       return {
         isAuthenticated: true,
         token: storedToken,
-        user: JSON.parse(localStorage.getItem('authUser') || '{}')
+        user: user,
+        isAdmin: user.role === 'admin'  // Set isAdmin based on role
       };
     }
   }
@@ -29,24 +32,35 @@ const createAuthStore = () => {
   return {
     subscribe,
     login: (userData) => {
+      console.log("Auth store: Logging in user", userData);
+      
+      // Save to localStorage
       localStorage.setItem('authToken', userData.token);
-      localStorage.setItem('authUser', JSON.stringify({
+      
+      const userToStore = {
         id: userData.id,
         username: userData.username,
         role: userData.role
-      }));
+      };
       
+      localStorage.setItem('authUser', JSON.stringify(userToStore));
+      
+      // Check if user is admin
+      const isAdmin = userData.role === 'admin';
+      console.log("Auth store: User is admin?", isAdmin);
+      
+      // Update store
       set({
         isAuthenticated: true,
         token: userData.token,
-        user: {
-          id: userData.id,
-          username: userData.username,
-          role: userData.role
-        }
+        user: userToStore,
+        isAdmin: isAdmin
       });
+      
+      console.log("Auth store: Login complete");
     },
     logout: () => {
+      console.log("Auth store: Logging out user");
       localStorage.removeItem('authToken');
       localStorage.removeItem('authUser');
       set(initialState);
@@ -70,11 +84,13 @@ const createAuthStore = () => {
 export const auth = createAuthStore();
 export default auth;
 
-// For compatibility with older code, add these exports
+// For compatibility with older code
 export function login(userData) {
+  console.log("Login function called with", userData);
   auth.login(userData);
 }
 
 export function logout() {
+  console.log("Logout function called");
   auth.logout();
 } 

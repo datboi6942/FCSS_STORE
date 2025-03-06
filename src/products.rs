@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use uuid::Uuid;
 use crate::AppState;
+use sqlx::SqlitePool;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Product {
@@ -101,4 +102,10 @@ pub fn init_routes(cfg: &mut web::ServiceConfig) {
             .route("", web::get().to(list_products))
             .route("", web::post().to(add_product))
     );
+}
+
+pub async fn get_all_products(
+    _pool: web::Data<SqlitePool>,
+) -> impl Responder {
+    HttpResponse::Ok().json("Products list")
 }

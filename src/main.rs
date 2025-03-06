@@ -16,8 +16,8 @@ use std::sync::{Mutex, Arc};
 use actix_cors::Cors;
 use sqlx::SqlitePool;
 use dotenv::dotenv;
-use middleware::JwtAuthentication;
 use actix_web::http::header;
+use log;
 
 pub struct AppState {
     pub db: SqlitePool,
@@ -57,91 +57,110 @@ async fn index() -> impl Responder {
       </body>
     </html>
     "#;
+    
     HttpResponse::Ok().content_type("text/html").body(html_content)
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Load environment variables
     dotenv().ok();
+    env_logger::init();
     
-    // Configure logging
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+    // Create database directory
+    std::fs::create_dir_all("./data").unwrap_or_else(|e| {
+        log::info!("Directory exists or error: {}", e);
+    });
     
-    log::info!("Starting up Secure Store server");
+    // Give full permissions to the data directory
+    #[cfg(unix)]
+    std::process::Command::new("chmod")
+        .args(&["777", "./data"])
+        .output()
+        .expect("Failed to chmod data directory");
     
-    // Database setup
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:secure_store.db".to_string());
-    let db_pool = SqlitePool::connect(&db_url)
-        .await
-        .expect("Failed to connect to SQLite");
+    // Get database pool first
+    let pool = db::create_pool().await;
     
-    // Uncomment if you want to setup database tables
-    // setup_db::setup_database(&db_pool).await.expect("Failed to setup database");
+    // Initialize database schema with the pool we just created
+    log::info!("Setting up database schema...");
+    match setup_db::setup(&pool).await {
+        Ok(_) => log::info!("Database setup completed successfully"),
+        Err(e) => {
+            log::error!("Database setup failed: {}", e);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other, 
+                format!("Failed to setup database: {}", e)
+            ));
+        }
+    }
+    
+    // Initialize chat history
+    let chat_history = Arc::new(Mutex::new(Vec::new()));
     
     // Create app state
-    let chat_history = Arc::new(Mutex::new(Vec::<chat::ChatMessage>::new()));
-    let app_data = web::Data::new(AppState {
-        db: db_pool.clone(),
+    let app_state = web::Data::new(AppState {
+        db: pool,
         chat_history,
     });
     
-    // Start auto-purge task in background
-    let _ = auto_purge::spawn_purge_task(db_pool.clone());
-    
+    // Add auto-purge system
+    let app_state_clone = app_state.clone();
+    tokio::spawn(async move {
+        auto_purge::start_auto_purge(app_state_clone).await;
+    });
+
+    // Start HTTP server
     log::info!("Starting HTTP server at http://127.0.0.1:8443");
-    
     HttpServer::new(move || {
-        // Create CORS configuration inside the closure so each thread has its own
         let cors = Cors::default()
-            .allowed_origin("http://localhost:5173")  // Svelte dev server
-            .allowed_origin("http://localhost:3000")  // Alternative common dev port
-            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
-            .allowed_headers(vec![
-                header::AUTHORIZATION,
-                header::CONTENT_TYPE,
-                header::ACCEPT
-            ])
-            .supports_credentials()
-            .max_age(3600);  // Cache preflight requests for 1 hour
-            
+            .allowed_origin("http://localhost:3000")
+            .allowed_origin("http://127.0.0.1:3000")
+            .allowed_origin("http://localhost:5000")
+            .allowed_origin("http://127.0.0.1:5000")
+            .allowed_origin("http://localhost:5173") 
+            .allowed_origin("http://127.0.0.1:5173") 
+            .allowed_methods(vec!["GET", "POST"])
+            .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
+            .max_age(3600);
+        
         App::new()
             .wrap(Logger::default())
             .wrap(cors)
-            .app_data(app_data.clone())
-            // Public routes
+            .app_data(app_state.clone())
             .route("/", web::get().to(index))
+            .route("/health", web::get().to(|| async { HttpResponse::Ok().body("OK") }))
+            // Auth routes
             .service(auth::init_routes())
-            // Protected routes with middleware
+            // Order routes
             .service(
                 web::scope("/order")
-                    .wrap(JwtAuthentication)
                     .route("", web::post().to(orders::create_order))
-                    .route("/history", web::get().to(orders::order_history))
+                    .route("/status", web::post().to(orders::update_order_status))
+                    .route("/history", web::get().to(orders::get_user_orders))
+                    .route("/all", web::get().to(orders::order_history))
             )
-            .service(
-                web::scope("/payment")
-                    .wrap(JwtAuthentication)
-                    .route("/initiate", web::post().to(payment::initiate_payment))
-                    .route("/verify", web::post().to(payment::verify_payment))
-            )
+            // Admin routes
+            .service(admin::init_routes())
+            // Product routes
             .service(
                 web::scope("/products")
                     .route("", web::get().to(products::list_products))
-                    .service(
-                        web::resource("")
-                            .wrap(JwtAuthentication)
-                            .route(web::post().to(products::add_product))
-                    )
+                    .route("", web::post().to(products::add_product))
             )
+            // Payment routes
             .service(
-                web::scope("/admin")
-                    .wrap(JwtAuthentication)
-                    .route("", web::get().to(admin::admin_dashboard))
+                web::scope("/payment")
+                    .route("/initiate", web::post().to(payment::initiate_payment))
+                    .route("/verify", web::post().to(payment::verify_payment))
             )
-            .service(chat::init_routes())
+            // Chat routes
+            .service(
+                web::scope("/chat")
+                    .route("", web::get().to(chat::chat_handler))
+                    .route("/message", web::post().to(chat::post_message))
+            )
     })
-    .bind(("127.0.0.1", 8443))?
+    .bind("0.0.0.0:8443")?
     .run()
     .await
 }

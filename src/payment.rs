@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use uuid::Uuid;
 use crate::AppState;
+use log::{info, error};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transaction {
@@ -20,9 +21,9 @@ pub struct Transaction {
 #[derive(Deserialize)]
 pub struct PaymentRequest {
     pub order_id: String,
-    pub amount: String,
+    pub amount: f64,
     pub currency: String,
-    pub method: String,
+    pub payment_method: String,
 }
 
 #[derive(Deserialize)]
@@ -32,65 +33,63 @@ pub struct PaymentVerification {
 
 #[derive(Serialize)]
 pub struct PaymentResponse {
+    pub transaction_id: String,
+    pub session_id: String,
     pub status: String,
-    pub message: String,
-    pub session_id: Option<String>,
 }
 
 pub async fn initiate_payment(
-    payment_data: web::Json<PaymentRequest>,
+    payment_req: web::Json<PaymentRequest>,
     state: web::Data<AppState>,
 ) -> impl Responder {
-    let payment = payment_data.into_inner();
+    let payment = payment_req.into_inner();
+    
+    info!("Initiating payment for order_id: {}, amount: {}", 
+          payment.order_id, payment.amount);
     
     // Validate order exists
-    let order_exists = sqlx::query!("SELECT id FROM orders WHERE id = ?", payment.order_id)
-        .fetch_optional(&state.db)
-        .await;
+    let order_exists = sqlx::query!(
+        "SELECT id FROM orders WHERE id = ?",
+        payment.order_id
+    )
+    .fetch_optional(&state.db)
+    .await;
     
     match order_exists {
-        Ok(Some(_)) => {/* Order exists */},
+        Ok(Some(_)) => info!("Order {} exists", payment.order_id),
         Ok(None) => {
+            info!("Order {} not found", payment.order_id);
             return HttpResponse::BadRequest().json(
                 serde_json::json!({"error": "Order not found"})
             );
         }
         Err(e) => {
-            log::error!("Database error: {}", e);
+            error!("Database error checking order: {}", e);
             return HttpResponse::InternalServerError().json(
                 serde_json::json!({"error": "Error validating order"})
             );
         }
     }
     
-    // Parse amount
-    let amount = match payment.amount.parse::<f64>() {
-        Ok(a) => a,
-        Err(_) => {
-            return HttpResponse::BadRequest().json(
-                serde_json::json!({"error": "Invalid amount format"})
-            );
-        }
-    };
-    
-    // Create transaction
-    let transaction_id = Uuid::new_v4().to_string();
-    let session_id = Uuid::new_v4().to_string();
+    // Create transaction record
+    let transaction_id = format!("txn-{}", Uuid::new_v4().simple());
+    let session_id = format!("sess-{}", Uuid::new_v4().simple());
     let now = Utc::now();
     
-    // Create a local binding for session_id to extend its lifetime
-    let session_id_clone = session_id.clone();
-    
+    // Insert transaction using EXACT column names and order matching our schema
     let result = sqlx::query!(
-        "INSERT INTO transactions (id, order_id, amount, currency, method, status, session_id, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        r#"
+        INSERT INTO transactions 
+        (id, order_id, amount, status, payment_method, session_id, currency, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
         transaction_id,
         payment.order_id,
-        amount,
-        payment.currency,
-        payment.method,
+        payment.amount,
         "pending",
-        session_id_clone,  // Use the cloned value
+        payment.payment_method,
+        session_id,
+        payment.currency,
         now
     )
     .execute(&state.db)
@@ -98,14 +97,17 @@ pub async fn initiate_payment(
     
     match result {
         Ok(_) => {
+            info!("Payment initiated: transaction_id={}, session_id={}", 
+                 transaction_id, session_id);
+            
             HttpResponse::Ok().json(PaymentResponse {
+                transaction_id,
+                session_id,
                 status: "pending".to_string(),
-                message: "Payment initiated successfully".to_string(),
-                session_id: Some(session_id),
             })
         }
         Err(e) => {
-            log::error!("Failed to initiate payment: {}", e);
+            error!("Failed to create transaction: {}", e);
             HttpResponse::InternalServerError().json(
                 serde_json::json!({"error": "Failed to initiate payment"})
             )
@@ -117,61 +119,81 @@ pub async fn verify_payment(
     verification: web::Json<PaymentVerification>,
     state: web::Data<AppState>,
 ) -> impl Responder {
-    let session_id = &verification.session_id;
+    let session_id = verification.session_id.clone();
     
-    // Find transaction by session_id
+    info!("Verifying payment with session_id: {}", session_id);
+    
+    // Find transaction by session_id - update the SELECT to match our schema
     let transaction = sqlx::query!(
-        "SELECT id, order_id FROM transactions WHERE session_id = ?",
+        r#"
+        SELECT id, order_id, payment_method
+        FROM transactions 
+        WHERE session_id = ?
+        "#,
         session_id
     )
     .fetch_optional(&state.db)
     .await;
     
     match transaction {
-        Ok(Some(transaction)) => {
-            // Update transaction status to completed
+        Ok(Some(txn)) => {
+            // Update transaction status to 'completed'
             let update_result = sqlx::query!(
                 "UPDATE transactions SET status = ? WHERE id = ?",
                 "completed",
-                transaction.id
+                txn.id
             )
             .execute(&state.db)
             .await;
             
-            // Also update order status
-            let order_update = sqlx::query!(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                "completed",
-                transaction.order_id
-            )
-            .execute(&state.db)
-            .await;
-            
-            match (update_result, order_update) {
-                (Ok(_), Ok(_)) => {
-                    HttpResponse::Ok().json(PaymentResponse {
-                        status: "completed".to_string(),
-                        message: "Payment verified successfully".to_string(),
-                        session_id: Some(session_id.clone()),
-                    })
+            match update_result {
+                Ok(_) => {
+                    // Also update the order status
+                    let order_update = sqlx::query!(
+                        "UPDATE orders SET status = ? WHERE id = ?",
+                        "paid",
+                        txn.order_id
+                    )
+                    .execute(&state.db)
+                    .await;
+                    
+                    match order_update {
+                        Ok(_) => {
+                            info!("Payment verified and completed for order: {}", txn.order_id);
+                            HttpResponse::Ok().json(
+                                serde_json::json!({
+                                    "status": "success",
+                                    "message": "Payment verified",
+                                    "order_id": txn.order_id
+                                })
+                            )
+                        }
+                        Err(e) => {
+                            error!("Failed to update order status: {}", e);
+                            HttpResponse::InternalServerError().json(
+                                serde_json::json!({"error": "Payment verified but order update failed"})
+                            )
+                        }
+                    }
                 }
-                _ => {
-                    log::error!("Failed to update transaction status");
+                Err(e) => {
+                    error!("Failed to update transaction status: {}", e);
                     HttpResponse::InternalServerError().json(
-                        serde_json::json!({"error": "Failed to verify payment"})
+                        serde_json::json!({"error": "Failed to complete payment"})
                     )
                 }
             }
         }
         Ok(None) => {
+            info!("No transaction found with session_id: {}", session_id);
             HttpResponse::NotFound().json(
                 serde_json::json!({"error": "Payment session not found"})
             )
         }
         Err(e) => {
-            log::error!("Database error: {}", e);
+            error!("Database error: {}", e);
             HttpResponse::InternalServerError().json(
-                serde_json::json!({"error": "Error verifying payment"})
+                serde_json::json!({"error": "Failed to verify payment"})
             )
         }
     }

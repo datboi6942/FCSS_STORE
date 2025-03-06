@@ -9,11 +9,23 @@
   let isLoading = false;
   let isRegistering = false;
   let successMessage = '';
+  let adminPassword = '';
   
   // Check if the connection is from localhost
   const isLocalhost = 
     window.location.hostname === 'localhost' || 
     window.location.hostname === '127.0.0.1';
+    
+  onMount(() => {
+    console.log("Login component mounted");
+    // Get the admin password from the config file if available
+    if (window.secureStoreConfig && window.secureStoreConfig.adminPassword) {
+      adminPassword = window.secureStoreConfig.adminPassword;
+      console.log("Admin config loaded successfully");
+    } else {
+      console.error("Admin config not found!");
+    }
+  });
     
   async function handleLogin() {
     if (!username || !password) {
@@ -25,16 +37,28 @@
       isLoading = true;
       errorMessage = '';
       
-      // Special admin login check with hardcoded password
-      if (username === 'admin' && password === 'Hunting0126$' && isLocalhost) {
-        // Manually create admin user without server validation
-        login({
+      // Special admin login check with password from config
+      if (username === 'admin' && password === adminPassword && isLocalhost) {
+        console.log("Admin login matched - logging in as admin");
+        
+        // Use a fixed admin user object that includes all necessary fields
+        const adminUser = {
           username: 'admin',
           id: 'admin-user',
           role: 'admin',
-          token: 'admin-token' // In real apps, you'd still authenticate with the server
-        });
+          token: 'admin-token-' + Date.now(),
+          isAdmin: true  // Explicitly set this flag
+        };
+        
+        // Call the login function
+        login(adminUser);
         successMessage = 'Logged in as administrator';
+        
+        // Redirect to admin panel
+        setTimeout(() => {
+          window.location.href = '/admin';
+        }, 1000);
+        
         return;
       }
       

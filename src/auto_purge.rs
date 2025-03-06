@@ -2,7 +2,7 @@ use actix_web::web;
 use chrono::{Utc, Duration};
 use std::time::Duration as StdDuration;
 use crate::AppState;
-use log::info;
+use log::{info, error};
 use sqlx;
 use sqlx::SqlitePool;
 use tokio::task;
@@ -68,21 +68,90 @@ pub fn spawn_purge_task(pool: SqlitePool) -> Result<task::JoinHandle<()>, ()> {
 }
 
 async fn purge_old_records(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
-    // Get timestamp for records older than 30 days
-    let cutoff_date = Utc::now() - chrono::Duration::days(30);
-    let timestamp = cutoff_date.timestamp();
+    info!("Purging old records...");
     
-    // Delete old records (adjust table and column names as needed)
-    // This is a placeholder - modify for your actual schema
+    // Purge transactions older than 90 days
     let result = sqlx::query!(
-        r#"
-        DELETE FROM orders
-        WHERE created_at < ?
-        "#,
-        timestamp
+        "DELETE FROM transactions WHERE created_at < datetime('now', '-90 days')"
     )
     .execute(pool)
     .await?;
     
-    Ok(result.rows_affected())
+    let count = result.rows_affected();
+    
+    // Also purge completed orders older than 60 days
+    let order_result = sqlx::query!(
+        "DELETE FROM orders WHERE status = 'completed' AND created_at < datetime('now', '-60 days')"
+    )
+    .execute(pool)
+    .await?;
+    
+    let total_count = count + order_result.rows_affected();
+    
+    Ok(total_count)
+}
+
+// Function to purge old transactions
+async fn purge_old_transactions(pool: &SqlitePool) {
+    info!("Purging old transactions...");
+    
+    // Delete transactions older than 30 days
+    match sqlx::query!(
+        "DELETE FROM transactions WHERE created_at < datetime('now', '-30 days')"
+    )
+    .execute(pool)
+    .await {
+        Ok(result) => {
+            if result.rows_affected() > 0 {
+                info!("Purged {} old transactions", result.rows_affected());
+            } else {
+                info!("No old transactions to purge");
+            }
+        },
+        Err(e) => {
+            error!("Failed to purge old transactions: {}", e);
+        }
+    }
+}
+
+// Function to purge old chat messages
+async fn purge_old_chat_messages(app_state: web::Data<AppState>) {
+    info!("Purging old chat messages...");
+    
+    // Access chat history through mutex
+    let mut chat_history = app_state.chat_history.lock().unwrap();
+    
+    // Calculate timestamp for 7 days ago
+    let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
+    
+    // Count messages before deletion
+    let before_count = chat_history.len();
+    
+    // Remove messages older than 7 days
+    chat_history.retain(|msg| msg.timestamp > week_ago);
+    
+    // Count removed messages
+    let removed_count = before_count - chat_history.len();
+    
+    if removed_count > 0 {
+        info!("Purged {} old chat messages", removed_count);
+    } else {
+        info!("No old chat messages to purge");
+    }
+}
+
+// Main auto-purge function
+pub async fn start_auto_purge(app_state: web::Data<AppState>) {
+    info!("Starting auto-purge service...");
+    
+    loop {
+        // Purge old transactions
+        purge_old_transactions(&app_state.db).await;
+        
+        // Purge old chat messages
+        purge_old_chat_messages(app_state.clone()).await;
+        
+        // Sleep for 24 hours
+        tokio::time::sleep(tokio::time::Duration::from_secs(86400)).await;
+    }
 }

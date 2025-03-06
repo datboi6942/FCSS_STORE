@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { auth } from '../stores/auth.js';
     import { apiCall } from '../api.js';
+    import { authStore } from '../stores/authStore';
     
     let products = [];
     let newProduct = { name: '', description: '', price: 0, available: true };
