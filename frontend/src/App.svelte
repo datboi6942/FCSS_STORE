@@ -5,26 +5,29 @@
   import Products from './components/Products.svelte';
   import Orders from './components/Orders.svelte';
   import Chat from './components/Chat.svelte';
-  import Payment from './components/Payment.svelte';
   import Login from './components/Login.svelte';
   import { Router, Route } from "svelte-routing";
   import { onMount } from 'svelte';
   import { auth } from './stores/auth.js';
+  import { cartItems, cartTotal, cart } from './stores/cart.js';
   
   // Import missing components
   import Nav from './components/Nav.svelte';
   import ProtectedRoute from './components/ProtectedRoute.svelte';
   import UserProfile from './components/UserProfile.svelte';
-  import ProductList from './components/Products.svelte'; // Using Products component as ProductList
+  import ProductList from './components/Products.svelte';
   import Cart from './components/Cart.svelte';
   import CartDrawer from './components/CartDrawer.svelte';
-  // import CartIcon from './components/CartIcon.svelte';
+  import ShippingFormOverlay from './components/ShippingFormOverlay.svelte';
+  import MoneroCheckout from './routes/MoneroCheckout.svelte';
 
   // Dynamically import AdminPanel
   import { fade } from 'svelte/transition';
   let AdminPanel;
   
   let serverReady = false;
+  let showShippingForm = false;
+  let isCartOpen = false;
   
   // Check if server is ready before initializing app components
   async function checkServerReadiness() {
@@ -112,18 +115,80 @@
     }
   });
 
-  // Local state for cart drawer visibility
-  let isCartOpen = false;
-  
   function handleToggleCart() {
     isCartOpen = !isCartOpen;
   }
 
-  import MoneroCheckout from './routes/checkout/monero/+page.svelte';
+  import OrderStatus from './components/OrderStatus.svelte';
+  import AdminOrders from './components/AdminOrders.svelte';
+
+  // Add a new function to handle shipping form display
+  function handleShowShipping() {
+    console.log("Showing shipping form");
+    showShippingForm = true;
+  }
+
+  // Add this function to handle shipping form submission
+  async function handleShippingSubmit(event) {
+    const checkoutData = {
+      ...event.detail,
+      user_id: getCurrentUserId() || 'guest',
+      items: $cartItems,
+    };
+    
+    console.log('Submitting checkout data:', checkoutData);
+    
+    try {
+      // Update this URL to match our backend route
+      const response = await fetch('http://localhost:5000/monero/checkout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(checkoutData)
+      });
+      
+      console.log('Response status:', response.status);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Error response body:', errorText);
+        throw new Error(`HTTP error! status: ${response.status}, response: ${errorText}`);
+      }
+      
+      const data = await response.json();
+      console.log('Checkout response:', data);
+      
+      if (data.success) {
+        cartItems.set([]);
+        showShippingForm = false;
+        window.location.href = `/monero/checkout/${data.order_id}`;
+      } else {
+        alert('Checkout failed: ' + (data.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Checkout error:', error);
+      alert('Error during checkout: ' + error.message);
+    }
+  }
+  
+  // Helper function to get current user ID
+  function getCurrentUserId() {
+    try {
+      return $auth.user ? $auth.user.id : null;
+    } catch (e) {
+      return null;
+    }
+  }
 </script>
 
 <Router>
-  <NavBar {setView} onToggleCart={handleToggleCart} />
+  <NavBar 
+    {setView} 
+    onToggleCart={handleToggleCart}
+    onShowShipping={handleShowShipping}
+  />
   
   <CartDrawer isOpen={isCartOpen} />
   
@@ -131,7 +196,12 @@
     <Route path="/" component={ProductList} />
     <Route path="/login" component={Login} />
     <Route path="/products" component={ProductList} />
-    <Route path="/checkout/monero" component={MoneroCheckout} />
+    <Route 
+      path="/monero/checkout/:order_id" 
+      let:params
+    >
+      <MoneroCheckout {params} />
+    </Route>
     
     <Route path="/profile">
       <ProtectedRoute>
@@ -157,7 +227,12 @@
       </div>
     </Route>
     
-    <Route path="/cart" component={Cart} />
+    <Route path="/order-status" component={OrderStatus} />
+    <Route path="/admin/orders">
+      <ProtectedRoute requiredRole="admin">
+        <AdminOrders />
+      </ProtectedRoute>
+    </Route>
   </div>
   <main>
     {#if $currentView === 'home'}
@@ -168,8 +243,6 @@
       <Orders />
     {:else if $currentView === 'chat'}
       <Chat />
-    {:else if $currentView === 'payment'}
-      <Payment />
     {:else if $currentView === 'login'}
       <Login />
     {/if}
@@ -177,6 +250,14 @@
   <footer>
     © 2025 Secure Store. All rights reserved.
   </footer>
+  
+  <!-- Add the shipping form overlay directly in App.svelte so it's globally available -->
+  {#if showShippingForm}
+    <ShippingFormOverlay 
+      on:close={() => showShippingForm = false}
+      on:submit={handleShippingSubmit}
+    />
+  {/if}
 </Router>
 
 <style>
@@ -227,6 +308,21 @@
     margin-top: 1rem;
     color: #2196F3;
     text-decoration: none;
+  }
+
+  /* Add styling for the order ID section */
+  .order-id-section {
+    margin-top: 20px;
+    padding: 15px;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    border-left: 4px solid #28a745;
+  }
+  
+  .order-id-note {
+    font-size: 0.85em;
+    color: #6c757d;
+    margin-top: 5px;
   }
 </style>
 

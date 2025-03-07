@@ -4,6 +4,13 @@ use crate::AppState;
 use crate::monero::{PaymentStatus, MoneroPaymentRequest};
 use serde_json::json;
 use rand;
+use log;
+use crate::orders::create_order;
+use crate::types::ShippingInfo;
+use crate::orders::OrderItem;
+use uuid;
+use chrono;
+use sqlx::Row;
 
 #[derive(Deserialize)]
 pub struct CreatePaymentRequest {
@@ -28,6 +35,21 @@ pub struct TransactionProof {
 pub struct TransactionHistoryResponse {
     pub success: bool,
     pub transactions: Vec<MoneroPaymentRequest>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct CheckoutData {
+    pub items: Vec<Item>,
+    pub shipping_info: ShippingInfo,
+    pub user_id: String,
+    pub total: f64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct Item {
+    pub id: String,
+    pub price: f64,
+    pub quantity: u32,
 }
 
 #[post("/api/monero/create_payment")]
@@ -268,6 +290,271 @@ pub async fn force_check_payment(
     }
 }
 
+#[post("/checkout")]
+pub async fn checkout_handler(
+    app_state: web::Data<AppState>,
+    checkout_data: web::Json<CheckoutData>,
+) -> impl Responder {
+    // Log the method and request info
+    log::info!("Checkout handler called with POST method");
+    log::info!("Received checkout data: {:?}", checkout_data);
+    
+    // First ensure the schema is correct
+    if let Err(e) = ensure_monero_payment_schema(&app_state.db).await {
+        log::error!("Failed to ensure schema: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Database schema error: {}", e)
+        }));
+    }
+    
+    // Create Monero payment request
+    let payment = app_state.monero_payments.create_payment_usd(
+        format!("temp-{}", uuid::Uuid::new_v4().to_string()),
+        checkout_data.total
+    );
+    
+    log::info!("Created payment with ID: {}", payment.payment_id);
+    
+    // Insert the payment record with the order_id initially set to empty string
+    let now = chrono::Utc::now().timestamp();
+    match sqlx::query(
+        "INSERT INTO monero_payments (payment_id, amount, address, status, created_at, updated_at, order_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(payment.payment_id.clone())
+    .bind(payment.amount)
+    .bind(payment.address.clone())
+    .bind("Pending")  // Convert the enum to string
+    .bind(now)
+    .bind(now)
+    .bind("")  // Empty string for order_id initially
+    .execute(&app_state.db)
+    .await {
+        Ok(_) => log::info!("Inserted payment record into database"),
+        Err(e) => {
+            log::error!("Failed to insert payment record: {}", e);
+            return HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Failed to insert payment record: {}", e)
+            }));
+        }
+    }
+    
+    // Convert checkout items to OrderItems
+    let order_items: Vec<OrderItem> = checkout_data.items
+        .iter()
+        .map(|item| OrderItem {
+            product_id: item.id.clone(),
+            quantity: item.quantity,
+            price: item.price,
+        })
+        .collect();
+
+    // Create the order
+    let order = match create_order(
+        &app_state.db,
+        checkout_data.shipping_info.clone(),
+        order_items,
+        checkout_data.total,
+        Some(checkout_data.user_id.clone()),
+    ).await {
+        Ok(order) => order,
+        Err(e) => {
+            log::error!("Failed to create order: {}", e);
+            return HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Failed to create order"
+            }));
+        }
+    };
+    
+    log::info!("Created order with ID: {}", order.id);
+    
+    // Update the payment with the order ID using a regular query instead of the macro
+    match sqlx::query(
+        "UPDATE monero_payments SET order_id = ? WHERE payment_id = ?"
+    )
+    .bind(order.id.clone())
+    .bind(payment.payment_id.clone())
+    .execute(&app_state.db)
+    .await {
+        Ok(_) => log::info!("Updated payment record with order ID: {}", order.id),
+        Err(e) => log::warn!("Failed to update payment record with order ID: {}", e),
+    }
+    
+    // Update order with payment ID
+    match sqlx::query(
+        "UPDATE orders SET payment_id = ? WHERE id = ?"
+    )
+    .bind(payment.payment_id.clone())
+    .bind(order.id.clone())
+    .execute(&app_state.db)
+    .await {
+        Ok(_) => log::info!("Updated order with payment ID: {}", payment.payment_id),
+        Err(e) => {
+            log::error!("Failed to update order with payment ID: {}", e);
+            return HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Failed to update order with payment ID: {}", e)
+            }));
+        }
+    }
+    
+    // Update the in-memory payment as well
+    if let Err(e) = app_state.monero_payments.update_payment_order_id(&payment.payment_id, &order.id) {
+        log::warn!("Failed to update payment in memory: {}", e);
+    }
+    
+    // Return success response
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "order_id": order.id,
+        "payment": payment,
+        "message": "Please send Monero to the provided address"
+    }))
+}
+
+#[get("/checkout/test")]
+pub async fn checkout_test() -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "message": "Checkout endpoint is available"
+    }))
+}
+
+#[get("/debug/{path:.*}")]
+pub async fn debug_handler(req: HttpRequest) -> impl Responder {
+    log::info!("Debug request: {:?}", req);
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "message": "Debug endpoint reached",
+        "method": req.method().as_str(),
+        "path": req.path(),
+        "headers": format!("{:?}", req.headers())
+    }))
+}
+
+#[get("/debug-info")]
+pub async fn debug_info(req: HttpRequest) -> impl Responder {
+    log::info!("Debug info request: {:?}", req);
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "message": "Debug info endpoint reached",
+        "method": req.method().as_str(),
+        "path": req.path(),
+        "headers": format!("{:?}", req.headers())
+    }))
+}
+
+#[get("/routes")]
+pub async fn list_routes() -> impl Responder {
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "message": "Available routes",
+        "routes": [
+            "/monero/api/monero/check_payment/{payment_id}",
+            "/monero/checkout",
+            "/monero/checkout/test",
+            "/monero/debug-info",
+            // Add other routes
+        ]
+    }))
+}
+
+#[get("/order_payment/{order_id}")]
+pub async fn get_order_payment(
+    app_state: web::Data<AppState>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let order_id = path.into_inner();
+    log::info!("Looking up payment for order ID: {}", order_id);
+    
+    // First, check if the order exists
+    let order_count = match sqlx::query!(
+        "SELECT COUNT(*) as count FROM orders WHERE id = ?",
+        order_id
+    )
+    .fetch_one(&app_state.db)
+    .await {
+        Ok(row) => row.count,
+        Err(e) => {
+            log::error!("Database error checking if order exists {}: {}", order_id, e);
+            return HttpResponse::InternalServerError().json(PaymentResponse {
+                success: false,
+                message: Some(format!("Database error: {}", e)),
+                payment: None,
+            });
+        }
+    };
+    
+    if order_count == 0 {
+        log::warn!("Order ID {} does not exist in database", order_id);
+        return HttpResponse::NotFound().json(PaymentResponse {
+            success: false,
+            message: Some(format!("Order with ID {} not found", order_id)),
+            payment: None,
+        });
+    }
+    
+    // Now get the payment ID
+    match sqlx::query!(
+        "SELECT payment_id FROM orders WHERE id = ?",
+        order_id
+    )
+    .fetch_optional(&app_state.db)
+    .await {
+        Ok(Some(row)) => {
+            // Use unwrap_or_default() to handle null payment_id
+            let payment_id = row.payment_id.unwrap_or_default();
+            
+            // Check if payment_id is empty
+            if payment_id.is_empty() {
+                log::warn!("Order {} has no payment ID", order_id);
+                return HttpResponse::NotFound().json(PaymentResponse {
+                    success: false,
+                    message: Some(format!("Order {} has no payment ID", order_id)),
+                    payment: None,
+                });
+            }
+            
+            log::info!("Found payment ID {} for order {}", payment_id, order_id);
+            
+            // Now get the payment details
+            if let Some(payment) = app_state.monero_payments.get_payment(&payment_id) {
+                HttpResponse::Ok().json(PaymentResponse {
+                    success: true,
+                    message: Some(format!("Payment found for order {}", order_id)),
+                    payment: Some(payment),
+                })
+            } else {
+                log::warn!("Payment ID {} found but no payment details", payment_id);
+                HttpResponse::NotFound().json(PaymentResponse {
+                    success: false,
+                    message: Some(format!("Payment details not found for payment ID {}", payment_id)),
+                    payment: None,
+                })
+            }
+        },
+        Ok(None) => {
+            log::warn!("No order found with ID: {}", order_id);
+            HttpResponse::NotFound().json(PaymentResponse {
+                success: false,
+                message: Some(format!("No order found with ID: {}", order_id)),
+                payment: None,
+            })
+        },
+        Err(e) => {
+            log::error!("Database error looking up order {}: {}", order_id, e);
+            HttpResponse::InternalServerError().json(PaymentResponse {
+                success: false,
+                message: Some(format!("Database error: {}", e)),
+                payment: None,
+            })
+        }
+    }
+}
+
 pub fn init_routes() -> actix_web::Scope {
     web::scope("/monero")
         .service(create_payment)
@@ -277,4 +564,35 @@ pub fn init_routes() -> actix_web::Scope {
         .service(submit_proof)
         .service(get_user_transactions)
         .service(force_check_payment)
-} 
+        .service(checkout_handler)
+        .service(checkout_test)
+        .service(debug_handler)
+        .service(debug_info)
+        .service(list_routes)
+        .service(get_order_payment)
+}
+
+// First, let's fix the function that adds the column
+pub async fn ensure_monero_payment_schema(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+    // Use a query without the macro to avoid type issues with PRAGMA
+    let result = sqlx::query("PRAGMA table_info(monero_payments)")
+        .fetch_all(pool)
+        .await?;
+    
+    // Check if order_id column already exists - look for it by name in the results
+    let has_order_id = result.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .map(|name| name == "order_id")
+            .unwrap_or(false)
+    });
+    
+    if !has_order_id {
+        log::info!("Adding order_id column to monero_payments table");
+        // Execute the ALTER TABLE statement
+        sqlx::query("ALTER TABLE monero_payments ADD COLUMN order_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    
+    Ok(())
+}

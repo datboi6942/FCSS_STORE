@@ -4,7 +4,8 @@ use chrono::Utc;
 use uuid::Uuid;
 use crate::AppState;
 use sqlx::SqlitePool;
-use log::{info, error};
+use log::error;
+use serde_json::json;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Product {
@@ -120,82 +121,74 @@ pub async fn get_all_products(
 
 // Add this function to handle direct product purchase
 pub async fn purchase_product(
-    purchase_req: web::Json<PurchaseRequest>,
     state: web::Data<AppState>,
+    purchase: web::Json<PurchaseRequest>
 ) -> impl Responder {
-    let purchase = purchase_req.into_inner();
+    let order_id = format!("ord-{}", Uuid::new_v4().simple());
+    let now = Utc::now().timestamp();
     
-    info!("Processing purchase for product: {}, user: {}", 
-          purchase.product_id, purchase.user_id);
+    // Create payment record first
+    let payment_id = format!("pay-{}", Uuid::new_v4().simple());
     
-    // Validate product exists and is available
-    let product = sqlx::query!(
-        "SELECT id, name, price, available FROM products WHERE id = ?",
-        purchase.product_id
+    // Insert payment - handle errors explicitly
+    match sqlx::query(
+        "INSERT INTO monero_payments (payment_id, amount, address, status, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .fetch_optional(&state.db)
+    .bind(&payment_id)
+    .bind(purchase.price)
+    .bind("44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A")
+    .bind("Pending")
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
+    .await {
+        Ok(_) => (),
+        Err(e) => {
+            error!("Failed to create payment: {}", e);
+            return HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Failed to create payment: {}", e)
+            }));
+        }
+    }
+    
+    // Insert order without product_id
+    let result = sqlx::query(
+        "INSERT INTO orders (id, user_id, payment_id, status, shipping_name, shipping_address, 
+         shipping_city, shipping_state, shipping_zip, shipping_country, shipping_email, 
+         total_amount, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&order_id)
+    .bind(&purchase.user_id)
+    .bind(&payment_id)
+    .bind("Pending")
+    .bind("Customer") // Default shipping name
+    .bind("") // Default empty address
+    .bind("") // Default empty city
+    .bind("") // Default empty state
+    .bind("") // Default empty zip
+    .bind("") // Default empty country
+    .bind(&purchase.email)
+    .bind(purchase.price)
+    .bind(now)
+    .bind(now)
+    .execute(&state.db)
     .await;
     
-    match product {
-        Ok(Some(product)) => {
-            if !product.available {
-                return HttpResponse::BadRequest().json(
-                    serde_json::json!({"error": "Product is not available for purchase"})
-                );
-            }
-            
-            // Generate a unique order ID
-            let order_id = format!("ord-{}", Uuid::new_v4().simple());
-            let now = Utc::now();
-            
-            // Create the order record
-            let result = sqlx::query!(
-                "INSERT INTO orders (id, user_id, product_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
-                order_id,
-                purchase.user_id,
-                purchase.product_id,
-                "pending", // Initial status is pending until payment is completed
-                now
-            )
-            .execute(&state.db)
-            .await;
-            
-            match result {
-                Ok(_) => {
-                    // Return order details with payment information
-                    HttpResponse::Created().json(serde_json::json!({
-                        "order_id": order_id,
-                        "product_id": purchase.product_id,
-                        "product_name": product.name,
-                        "price": product.price,
-                        "status": "pending",
-                        "created_at": now,
-                        "payment_info": {
-                            "amount": product.price,
-                            "currency": "USD",
-                            "crypto_address": "0xabc123...def456", // Replace with your actual crypto address
-                            "payment_methods": ["BTC", "ETH", "USDT"]
-                        }
-                    }))
-                },
-                Err(e) => {
-                    error!("Failed to create order: {}", e);
-                    HttpResponse::InternalServerError().json(
-                        serde_json::json!({"error": "Failed to create order"})
-                    )
-                }
-            }
-        },
-        Ok(None) => {
-            HttpResponse::NotFound().json(
-                serde_json::json!({"error": "Product not found"})
-            )
-        },
+    match result {
+        Ok(_) => HttpResponse::Ok().json(json!({
+            "success": true,
+            "order_id": order_id,
+            "message": "Product purchased successfully"
+        })),
         Err(e) => {
-            error!("Database error: {}", e);
-            HttpResponse::InternalServerError().json(
-                serde_json::json!({"error": "Failed to retrieve product"})
-            )
+            error!("Failed to create order: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Failed to create order: {}", e)
+            }))
         }
     }
 }
@@ -205,6 +198,8 @@ pub async fn purchase_product(
 pub struct PurchaseRequest {
     pub user_id: String,
     pub product_id: String,
+    pub price: f64,
+    pub email: String,
 }
 
 // Add this new function to get all product IDs

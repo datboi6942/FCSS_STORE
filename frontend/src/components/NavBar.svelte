@@ -3,6 +3,7 @@
   import { Link } from "svelte-routing";
   import CartIcon from "./CartIcon.svelte";
   export let setView: (view: string) => void;
+  export let onShowShipping = () => {}; // Default empty function like onToggleCart
   import { tick } from 'svelte';
 
   // Flag to prevent rapid-fire clicks on the Products link
@@ -23,6 +24,11 @@
 
   // Accept the toggle handler from parent
   export let onToggleCart = () => {}; // Default empty function
+
+  // Update the handleShowShipping function
+  function handleShowShipping() {
+    onShowShipping(); // Now this will work since onShowShipping is defined
+  }
 </script>
 
 <nav class="navbar">
@@ -33,15 +39,16 @@
   <div class="nav-links">
     <Link to="/">Home</Link>
     <Link to="/products" on:click={handleProductsClick}>Products</Link>
-    <Link to="/cart">Cart</Link>
     <button on:click={() => setView('orders')}>Orders</button>
     <button on:click={() => setView('chat')}>Chat</button>
-    <button on:click={() => setView('payment')}>Payment</button>
     <button on:click={() => setView('login')}>Login</button>
   </div>
   
   <div class="nav-actions">
-    <CartIcon on:toggleCart={onToggleCart} />
+    <CartIcon 
+      on:toggleCart={onToggleCart}
+      on:showShipping={handleShowShipping}
+    />
   </div>
 </nav>
 

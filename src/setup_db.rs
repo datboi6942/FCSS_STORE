@@ -3,45 +3,97 @@ use chrono::Utc;
 use log::{info, error};
 use bcrypt::{hash, DEFAULT_COST};
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
 pub async fn setup(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     info!("Starting database setup");
     
     // First, enable foreign key constraints
     info!("Enabling foreign key constraints");
-    match sqlx::query("PRAGMA foreign_keys = ON;")
+    sqlx::query("PRAGMA foreign_keys = ON;")
         .execute(pool)
-        .await 
-    {
-        Ok(_) => info!("Foreign key constraints enabled"),
+        .await?;
+    
+    // Drop existing tables
+    info!("Dropping existing tables");
+    for table in &["transactions", "orders", "monero_payments", "products", "users"] {
+        match sqlx::query(&format!("DROP TABLE IF EXISTS {}", table))
+            .execute(pool)
+            .await
+        {
+            Ok(_) => info!("Dropped table: {}", table),
+            Err(e) => {
+                error!("Failed to drop table {}: {}", table, e);
+                // Continue anyway since the table might not exist
+            }
+        }
+    }
+    
+    // Create monero_payments table FIRST
+    info!("Creating monero_payments table");
+    match sqlx::query(
+        r#"
+        CREATE TABLE monero_payments (
+            payment_id TEXT PRIMARY KEY,
+            amount REAL NOT NULL,
+            address TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        "#
+    )
+    .execute(pool)
+    .await {
+        Ok(_) => info!("Created monero_payments table"),
         Err(e) => {
-            error!("Failed to enable foreign key constraints: {}", e);
+            error!("Failed to create monero_payments table: {}", e);
             return Err(e);
         }
     }
     
-    // Check if we already have data in the database
-    let user_count = sqlx::query!("SELECT COUNT(*) as count FROM users")
-        .fetch_one(pool)
-        .await?
-        .count;
-    
-    // If we already have users, skip data insertion
-    if user_count > 0 {
-        info!("Database already contains data, skipping sample data creation");
-        return Ok(());
+    // Create orders table SECOND (depends on monero_payments)
+    info!("Creating orders table");
+    match sqlx::query(
+        r#"
+        CREATE TABLE orders (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            payment_id TEXT UNIQUE,
+            status TEXT NOT NULL,
+            shipping_name TEXT NOT NULL,
+            shipping_address TEXT NOT NULL,
+            shipping_city TEXT NOT NULL,
+            shipping_state TEXT NOT NULL,
+            shipping_zip TEXT NOT NULL,
+            shipping_country TEXT NOT NULL,
+            shipping_email TEXT NOT NULL,
+            total_amount REAL NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(payment_id) REFERENCES monero_payments(payment_id)
+        )
+        "#
+    )
+    .execute(pool)
+    .await {
+        Ok(_) => info!("Created orders table"),
+        Err(e) => {
+            error!("Failed to create orders table: {}", e);
+            return Err(e);
+        }
     }
     
-    // Create tables in the correct order
+    // Create other tables
     info!("Creating users table");
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE users (
             id TEXT PRIMARY KEY NOT NULL,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at INTEGER NOT NULL
         )
         "#
     )
@@ -51,30 +103,13 @@ pub async fn setup(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     info!("Creating products table");
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS products (
+        CREATE TABLE products (
             id TEXT PRIMARY KEY NOT NULL,
             name TEXT NOT NULL,
             description TEXT NOT NULL,
             price REAL NOT NULL,
             available BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        "#
-    )
-    .execute(pool)
-    .await?;
-    
-    info!("Creating orders table");
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS orders (
-            id TEXT PRIMARY KEY NOT NULL,
-            user_id TEXT NOT NULL,
-            product_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (product_id) REFERENCES products(id)
+            created_at INTEGER NOT NULL
         )
         "#
     )
@@ -84,7 +119,6 @@ pub async fn setup(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     info!("Creating transactions table");
     sqlx::query(
         r#"
-        DROP TABLE IF EXISTS transactions;
         CREATE TABLE transactions (
             id TEXT PRIMARY KEY NOT NULL,
             order_id TEXT NOT NULL,
@@ -93,7 +127,7 @@ pub async fn setup(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             payment_method TEXT NOT NULL,
             session_id TEXT NOT NULL,
             currency TEXT NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at INTEGER NOT NULL,
             FOREIGN KEY (order_id) REFERENCES orders(id)
         )
         "#
@@ -101,183 +135,155 @@ pub async fn setup(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // Always add sample data for in-memory database since it starts empty
-    info!("Adding sample data to in-memory database");
-    
-    // Create admin user with bcrypt password hash
-    let admin_password_hash = match hash("admin123", DEFAULT_COST) {
-        Ok(hash) => hash,
-        Err(e) => {
-            error!("Failed to hash admin password: {}", e);
-            return Err(sqlx::Error::Protocol("Failed to hash password".into()));
-        }
-    };
-    
-    let user_password_hash = match hash("user123", DEFAULT_COST) {
-        Ok(hash) => hash,
-        Err(e) => {
-            error!("Failed to hash user password: {}", e);
-            return Err(sqlx::Error::Protocol("Failed to hash password".into()));
-        }
-    };
-    
-    let now = Utc::now();
-    
-    // Add admin user
-    match sqlx::query!(
-        "INSERT INTO users (id, username, password_hash, role, created_at) 
-         VALUES (?, ?, ?, ?, ?)",
+    // Add sample data
+    let now = Utc::now().timestamp();
+
+    // Add sample admin user
+    info!("Adding admin user");
+    let admin_password = hash("admin123", DEFAULT_COST).unwrap();
+    sqlx::query!(
+        r#"
+        INSERT INTO users (id, username, password_hash, role, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        "#,
         "usr-admin1",
         "admin",
-        admin_password_hash,
+        admin_password,
         "admin",
         now
     )
     .execute(pool)
-    .await
-    {
-        Ok(_) => info!("Added admin user"),
-        Err(e) => {
-            error!("Failed to add admin user: {}", e);
-            return Err(e);
-        }
-    }
-    
-    // Add regular user
-    match sqlx::query!(
-        "INSERT INTO users (id, username, password_hash, role, created_at) 
-         VALUES (?, ?, ?, ?, ?)",
+    .await?;
+
+    // Add sample regular user
+    info!("Adding regular user");
+    let user_password = hash("user123", DEFAULT_COST).unwrap();
+    sqlx::query!(
+        r#"
+        INSERT INTO users (id, username, password_hash, role, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        "#,
         "usr-user1",
-        "user",
-        user_password_hash,
+        "testuser",
+        user_password,
         "user",
         now
     )
     .execute(pool)
-    .await
-    {
-        Ok(_) => info!("Added regular user"),
-        Err(e) => {
-            error!("Failed to add regular user: {}", e);
-            return Err(e);
-        }
-    }
-    
+    .await?;
+
     // Add sample products
-    match sqlx::query!(
-        "INSERT INTO products (id, name, description, price, available, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?)",
+    info!("Adding sample products");
+    sqlx::query!(
+        r#"
+        INSERT INTO products (id, name, description, price, available, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        "#,
         "prod-1",
         "Premium Widget",
-        "Our best-selling premium widget with all features",
-        99.99,
+        "A high-quality widget for all your needs",
+        199.99,
         true,
         now
     )
     .execute(pool)
-    .await
-    {
-        Ok(_) => info!("Added product 1"),
-        Err(e) => {
-            error!("Failed to add product 1: {}", e);
-            return Err(e);
-        }
-    }
-    
-    match sqlx::query!(
-        "INSERT INTO products (id, name, description, price, available, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?)",
+    .await?;
+
+    sqlx::query!(
+        r#"
+        INSERT INTO products (id, name, description, price, available, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        "#,
         "prod-2",
         "Basic Widget",
-        "Affordable widget with essential features",
+        "An affordable widget for everyday use",
         49.99,
         true,
         now
     )
     .execute(pool)
-    .await
+    .await?;
+
+    // Add sample monero payment
+    info!("Adding sample monero payment");
+    let payment_id = format!("pay-{}", Uuid::new_v4().simple());
+    match sqlx::query("INSERT INTO monero_payments (payment_id, amount, address, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(&payment_id)
+        .bind(99.99)
+        .bind("44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A")
+        .bind("Pending")
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
     {
-        Ok(_) => info!("Added product 2"),
+        Ok(_) => info!("Added sample monero payment"),
         Err(e) => {
-            error!("Failed to add product 2: {}", e);
-            return Err(e);
+            error!("Failed to add sample monero payment: {}", e);
+            // Continue anyway, don't return error
         }
     }
-    
-    // Add sample orders
-    match sqlx::query!(
-        "INSERT INTO orders (id, user_id, product_id, status, created_at) 
-         VALUES (?, ?, ?, ?, ?)",
-        "ord-1",
-        "usr-user1",
-        "prod-1",
-        "completed",
-        now
-    )
-    .execute(pool)
-    .await
+
+    // Add sample order
+    info!("Adding sample order");
+    match sqlx::query("INSERT INTO orders (id, user_id, payment_id, status, shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, shipping_country, shipping_email, total_amount, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind("ord-1")
+        .bind("usr-user1")
+        .bind(&payment_id)
+        .bind("Pending")
+        .bind("Test User")
+        .bind("123 Test St")
+        .bind("Test City")
+        .bind("Test State")
+        .bind("12345")
+        .bind("Test Country")
+        .bind("test@example.com")
+        .bind(99.99)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
     {
-        Ok(_) => info!("Added order 1"),
+        Ok(_) => info!("Added sample order"),
         Err(e) => {
-            error!("Failed to add order 1: {}", e);
-            return Err(e);
+            error!("Failed to add sample order: {}", e);
+            // Continue anyway, don't return error
         }
     }
-    
-    match sqlx::query!(
-        "INSERT INTO orders (id, user_id, product_id, status, created_at) 
-         VALUES (?, ?, ?, ?, ?)",
-        "ord-2",
-        "usr-user1",
-        "prod-2",
-        "pending",
-        now
-    )
-    .execute(pool)
-    .await
-    {
-        Ok(_) => info!("Added order 2"),
-        Err(e) => {
-            error!("Failed to add order 2: {}", e);
-            return Err(e);
-        }
-    }
-    
-    // Add sample transactions
-    match sqlx::query!(
+
+    // Add sample transaction
+    info!("Adding sample transaction");
+    let txn_id = format!("txn-{}", Uuid::new_v4().simple());
+    let session_id = format!("sess-{}", Uuid::new_v4().simple());
+
+    sqlx::query!(
         r#"
-        INSERT INTO transactions 
-        (id, order_id, amount, status, payment_method, session_id, currency, created_at) 
+        INSERT INTO transactions (
+            id, order_id, amount, status, payment_method, session_id, currency, created_at
+        )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         "#,
-        "txn-sample1",
+        txn_id,
         "ord-1",
-        29.99,
-        "completed",
-        "credit_card",
-        "sess-sample1",
-        "USD",
+        99.99,
+        "Pending",
+        "monero",
+        session_id,
+        "XMR",
         now
     )
     .execute(pool)
-    .await
-    {
-        Ok(_) => info!("Added sample transaction"),
-        Err(e) => {
-            error!("Failed to add sample transaction: {}", e);
-            return Err(e);
-        }
-    }
-    
+    .await?;
+
     info!("Database setup complete");
     Ok(())
 }
 
 #[derive(Debug)]
 pub struct TableCounts {
-    pub users: i32,    // Changed from i64 to i32
-    pub products: i32, // Changed from i64 to i32
-    pub orders: i32,   // Changed from i64 to i32
+    pub users: i32,
+    pub products: i32,
+    pub orders: i32,
 }
 
 pub async fn check_tables(pool: &sqlx::SqlitePool) -> TableCounts {
@@ -309,4 +315,27 @@ pub async fn check_tables(pool: &sqlx::SqlitePool) -> TableCounts {
     }
 
     counts
+}
+
+// Add this function to validate the database schema
+pub async fn validate_schema(pool: &SqlitePool) -> Result<(), String> {
+    // Check monero_payments table
+    match sqlx::query("SELECT payment_id, amount, address, status, created_at, updated_at FROM monero_payments LIMIT 1")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => info!("monero_payments table validated"),
+        Err(e) => return Err(format!("monero_payments table validation failed: {}", e)),
+    }
+
+    // Check orders table
+    match sqlx::query("SELECT id, user_id, payment_id, status, shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, shipping_country, shipping_email, total_amount, created_at, updated_at FROM orders LIMIT 1")
+        .execute(pool)
+        .await
+    {
+        Ok(_) => info!("orders table validated"),
+        Err(e) => return Err(format!("orders table validation failed: {}", e)),
+    }
+
+    Ok(())
 }

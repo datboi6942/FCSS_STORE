@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, Responder, post, get};
+use actix_web::{web, HttpResponse, Responder, post};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;

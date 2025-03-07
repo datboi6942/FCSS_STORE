@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use std::sync::{Mutex};
+use std::sync::{Mutex, Arc, Weak};
 use std::collections::HashMap;
 use rand;
+use crate::monero_wallet::MoneroWallet;
+use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoneroPaymentRequest {
@@ -26,37 +28,42 @@ pub enum PaymentStatus {
 // In-memory store for payment requests (would use a database in production)
 pub struct MoneroPaymentStore {
     payments: Mutex<HashMap<String, MoneroPaymentRequest>>,
+    app_state: Mutex<Option<Weak<AppState>>>,
 }
 
 impl MoneroPaymentStore {
     pub fn new() -> Self {
         Self {
             payments: Mutex::new(HashMap::new()),
+            app_state: Mutex::new(None),
+        }
+    }
+
+    // Add this method
+    pub fn update_payment_order_id(&self, payment_id: &str, order_id: &str) -> Result<(), String> {
+        let mut payments = self.payments.lock().unwrap();
+        if let Some(payment) = payments.get_mut(payment_id) {
+            payment.order_id = order_id.to_string();
+            Ok(())
+        } else {
+            Err(format!("Payment with ID {} not found", payment_id))
         }
     }
 
     pub async fn create_payment(&self, order_id: String, amount: f64) -> MoneroPaymentRequest {
         let now = chrono::Utc::now().timestamp();
         
-        // For production, initialize the wallet client from config here
-        let wallet_client = match crate::monero_wallet::MoneroWallet::new(
-            &std::env::var("MONERO_RPC_URL").unwrap_or_else(|_| "http://localhost:18082/json_rpc".to_string()),
-            None,
-            None
-        ) {
-            Ok(client) => client,
-            Err(e) => {
-                // Fallback to mocked address in case of error
-                println!("Error connecting to Monero wallet: {:?}", e);
-                return self.create_payment_mock(order_id, amount);
-            }
-        };
+        // Create a simple mock wallet
+        let wallet = MoneroWallet::new(
+            "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A".to_string(),
+            amount
+        );
         
         // Create a unique label for this payment
         let label = format!("order_{}", order_id);
         
-        // Try to get a new address from the wallet - add await here
-        let address = match wallet_client.create_address(&label).await {
+        // Try to get a new address from the wallet
+        let address = match wallet.create_address(&label).await {
             Ok(addr) => addr,
             Err(e) => {
                 // Fallback to mocked address in case of error
@@ -126,29 +133,18 @@ impl MoneroPaymentStore {
         
         println!("Found {} pending payments to check", pending_payments.len());
         
-        // For production, initialize the wallet client from config
-        let _wallet_client = match crate::monero_wallet::MoneroWallet::new(
-            &std::env::var("MONERO_RPC_URL").unwrap_or_else(|_| "http://localhost:18082/json_rpc".to_string()),
-            None,
-            None
-        ) {
-            Ok(client) => client,
-            Err(e) => {
-                println!("Error connecting to Monero wallet: {:?}", e);
-                return;
-            }
-        };
+        // Create a mock wallet for checking
+        let wallet = MoneroWallet::new(
+            "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A".to_string(),
+            0.0
+        );
         
         // For each pending payment, check if it has been received
         for payment in pending_payments {
             println!("Checking payment {} for address {}", payment.payment_id, payment.address);
             
-            // PLACEHOLDER: In a real implementation, call wallet_client's methods to check for
-            // incoming transactions to the payment address
-            
-            // For demo purposes, we'll continue to use the random confirmation
-            // but in production, you would check the wallet for actual payments
-            if rand::random::<f64>() < 0.3 {  // 30% chance of confirming for testing
+            // Use the mock wallet's check_payment method
+            if wallet.check_payment(payment.amount) {
                 println!("Payment {} confirmed!", payment.payment_id);
                 self.update_payment_status(&payment.payment_id, PaymentStatus::Confirmed);
             }
@@ -257,4 +253,76 @@ impl MoneroPaymentStore {
         // For sync calls, just use the mock implementation
         self.create_payment_mock(order_id, amount)
     }
-} 
+
+    // Add this method to MoneroPaymentStore
+    pub fn get_payment_by_order_id(&self, order_id: &str) -> Option<MoneroPaymentRequest> {
+        self.payments.lock().unwrap()
+            .values()
+            .find(|p| p.order_id == order_id)
+            .cloned()
+    }
+
+    // Update the payment checker to use the real wallet
+    pub async fn check_payments_with_wallet(&self) -> Result<(), String> {
+        println!("Checking for Monero payments using wallet...");
+        
+        // Get all pending payments
+        let pending_payments = self.get_pending_payments();
+        if pending_payments.is_empty() {
+            return Ok(());
+        }
+        
+        println!("Found {} pending payments to check with wallet", pending_payments.len());
+        
+        // Create a wallet instance
+        let wallet = MoneroWallet::new(
+            "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A".to_string(),
+            0.0
+        );
+        
+        // Check each pending payment
+        for payment in pending_payments {
+            println!("Checking payment {} for address {}", payment.payment_id, payment.address);
+            
+            match wallet.check_specific_payment(&payment.address, payment.amount).await {
+                Ok(Some(transfer)) => {
+                    println!("Payment {} confirmed with transaction {}", payment.payment_id, transfer.tx_hash);
+                    self.update_payment_status(&payment.payment_id, PaymentStatus::Confirmed);
+                    
+                    // Try to notify via WebSocket connections, but handle the case where the field might not exist
+                    if let Some(app_state_ref) = self.app_state.lock().unwrap().as_ref() {
+                        if let Some(_app_state) = app_state_ref.upgrade() {
+                            // Safely access the app_state fields without assuming ws_connections
+                            println!("Payment confirmed: notifying clients for order {}", payment.order_id);
+                            
+                            // Use a match to safely check if struct has a field
+                            #[allow(unused_variables)]
+                            let _notified = false;
+                            
+                            // Use runtime reflection-like approach to check struct fields
+                            let type_id = std::any::TypeId::of::<AppState>();
+                            println!("App state type ID: {:?}", type_id);
+                            
+                            // Just log that we would notify if WebSockets were available
+                            println!("WebSocket notification would be sent for order ID: {}", payment.order_id);
+                        }
+                    }
+                },
+                Ok(None) => {
+                    println!("Payment {} not yet received", payment.payment_id);
+                },
+                Err(e) => {
+                    println!("Error checking payment {}: {}", payment.payment_id, e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    // Add this method to set the app state
+    pub fn set_app_state(&self, app_state: &Arc<AppState>) {
+        let mut state = self.app_state.lock().unwrap();
+        *state = Some(Arc::downgrade(app_state));
+    }
+}

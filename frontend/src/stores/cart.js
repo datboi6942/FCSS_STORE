@@ -1,86 +1,72 @@
 import { writable, derived } from 'svelte/store';
 
-// Create the initial cart store
-const createCart = () => {
-  // Initialize cart from localStorage if available
-  let initialCart = [];
-  try {
-    const savedCart = localStorage.getItem('cart');
-    if (savedCart) {
-      initialCart = JSON.parse(savedCart);
-    }
-  } catch (e) {
-    console.error('Error loading cart from localStorage:', e);
-    // Continue with empty cart if parsing fails
-  }
-  
-  const { subscribe, set, update } = writable(initialCart);
-  
-  // Helper to save cart to localStorage
-  const saveCart = (items) => {
-    try {
-      localStorage.setItem('cart', JSON.stringify(items));
-    } catch (e) {
-      console.error('Error saving cart to localStorage:', e);
-    }
-    return items;
-  };
-  
-  return {
-    subscribe,
-    addItem: (item) => update(items => {
-      // Check if item already exists
-      const existingItem = items.find(i => i.id === item.id);
-      
-      let updatedItems;
-      if (existingItem) {
-        // Update quantity if item exists
-        updatedItems = items.map(i => 
-          i.id === item.id 
-            ? { ...i, quantity: i.quantity + 1 }
-            : i
-        );
-      } else {
-        // Add new item with quantity 1
-        updatedItems = [...items, { ...item, quantity: 1 }];
-      }
-      
-      return saveCart(updatedItems);
-    }),
-    updateQuantity: (id, quantity) => update(items => {
-      let updatedItems;
-      if (quantity <= 0) {
-        // Remove item if quantity is zero or negative
-        updatedItems = items.filter(i => i.id !== id);
-      } else {
-        // Update quantity
-        updatedItems = items.map(i => 
-          i.id === id ? { ...i, quantity } : i
-        );
-      }
-      
-      return saveCart(updatedItems);
-    }),
-    removeItem: (id) => update(items => {
-      const updatedItems = items.filter(i => i.id !== id);
-      return saveCart(updatedItems);
-    }),
-    clear: () => {
-      const emptyCart = [];
-      saveCart(emptyCart);
-      set(emptyCart);
-    }
-  };
-};
+// Initialize the cart store
+export const cartItems = writable([]);
 
-// Create the cart store
+// Create derived store for cart total
+export const cartTotal = derived(cartItems, ($cartItems) => {
+    return $cartItems.reduce((total, item) => {
+        return total + (item.price * item.quantity);
+    }, 0);
+});
+
+// Create the cart store with all methods
+function createCart() {
+    const { subscribe, set, update } = cartItems;
+
+    return {
+        subscribe,
+        addItem: (item) => {
+            update(items => {
+                const existingItem = items.find(i => i.id === item.id);
+                if (existingItem) {
+                    return items.map(i => 
+                        i.id === item.id 
+                            ? { ...i, quantity: i.quantity + 1 }
+                            : i
+                    );
+                }
+                return [...items, { ...item, quantity: 1 }];
+            });
+        },
+        removeItem: (id) => {
+            update(items => items.filter(i => i.id !== id));
+        },
+        updateQuantity: (id, quantity) => {
+            if (quantity < 1) return;
+            update(items =>
+                items.map(item =>
+                    item.id === id
+                        ? { ...item, quantity }
+                        : item
+                )
+            );
+        },
+        clear: () => set([])
+    };
+}
+
+// Export the cart store
 export const cart = createCart();
 
-// Derived stores for calculated values
-export const cartTotal = derived(cart, $cart => 
-  $cart ? $cart.reduce((total, item) => total + (item.price * item.quantity), 0) : 0
-);
+// Export helper functions
+export const addToCart = cart.addItem;
+export const removeFromCart = cart.removeItem;
+export const updateQuantity = cart.updateQuantity;
+export const clearCart = cart.clear;
 
-export const cartCount = derived(cart, $cart => 
-  $cart ? $cart.reduce((count, item) => count + item.quantity, 0) : 0
+// Load cart from localStorage on initialization
+const savedCart = localStorage.getItem('cart');
+if (savedCart) {
+    cartItems.set(JSON.parse(savedCart));
+}
+
+// Subscribe to changes and save to localStorage
+cartItems.subscribe(items => {
+    localStorage.setItem('cart', JSON.stringify(items));
+});
+
+// Export cart count for convenience
+export const cartCount = derived(cartItems, $cartItems => 
+    $cartItems.reduce((count, item) => count + item.quantity, 0)
 ); 

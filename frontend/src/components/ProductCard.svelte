@@ -136,7 +136,7 @@
     }
   }
   
-  function addToCart() {
+  function handleAddToCart() {
     cart.addItem(product);
     
     // Show notification
@@ -175,7 +175,7 @@
     {#if product.available}
       <button 
         class="add-to-cart-btn" 
-        on:click={addToCart} 
+        on:click={handleAddToCart} 
         disabled={adding}
       >
         {#if adding}

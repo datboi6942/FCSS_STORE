@@ -363,41 +363,35 @@ pub async fn get_all_orders(req: HttpRequest, data: web::Data<AppState>) -> impl
         info!("No auth header, but allowing access for testing");
     }
     
-    // Query orders with all needed fields
+    // Update query to match our actual database schema
     match sqlx::query!(
-        "SELECT o.id, o.user_id, o.product_id, o.status, o.created_at, 
-                u.username, p.name as product_name, p.price
+        "SELECT o.id, o.user_id, o.payment_id, o.status, o.created_at, 
+                o.shipping_name, o.shipping_email, o.total_amount,
+                u.username
          FROM orders o
-         JOIN users u ON o.user_id = u.id
-         JOIN products p ON o.product_id = p.id
+         LEFT JOIN users u ON o.user_id = u.id
          ORDER BY o.created_at DESC"
     )
     .fetch_all(&data.db)
     .await
     {
         Ok(orders) => {
-            // Create fixed structure JSON with all required fields explicitly set
             let orders_json = orders
                 .iter()
                 .map(|o| {
-                    // Log each order's details to help with debugging
-                    info!("Order ID: {}, Product: {:?}", o.id, o.product_name);
+                    info!("Order ID: {:?}", o.id);
                     
-                    // Create a JSON object that includes additional fields the frontend expects
-                    let obj = serde_json::json!({
-                        "id": o.id.clone(),
-                        "user_id": o.user_id.clone(),
+                    serde_json::json!({
+                        "id": o.id,
+                        "user_id": o.user_id,
                         "username": o.username,
-                        "product_id": o.product_id.clone(),
-                        "product_name": o.product_name,
-                        "product": o.product_name,  // Add this field - frontend might be looking for "product" 
-                        "price": o.price,
-                        "status": o.status.clone(),
-                        "created_at": o.created_at,
-                        "total": o.price
-                    });
-                    
-                    obj
+                        "payment_id": o.payment_id,
+                        "shipping_name": o.shipping_name,
+                        "shipping_email": o.shipping_email,
+                        "status": o.status,
+                        "total": o.total_amount,
+                        "created_at": o.created_at
+                    })
                 })
                 .collect::<Vec<_>>();
             

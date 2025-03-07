@@ -42,3 +42,18 @@ pub fn verify_jwt(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     
     Ok(token_data.claims)
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Session {
+    pub user_id: String,
+    pub expires: i64,
+}
+
+impl Session {
+    pub fn new(user_id: String) -> Self {
+        Self {
+            user_id,
+            expires: chrono::Utc::now().timestamp() + 3600, // 1 hour from now
+        }
+    }
+}

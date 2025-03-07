@@ -7,3 +7,7 @@ securestore.db-*
 **/*.rs.bk
 Cargo.lock
 public/config.js
+data/secure_store.db
+monero-x86_64-linux-gnu-v0.18.3.4
+/data/
+*.db
