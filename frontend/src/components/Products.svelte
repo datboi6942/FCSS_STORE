@@ -399,6 +399,37 @@
         return false;
       }
     }
+
+    async function checkProductsServer() {
+      // Check if a cached health status exists (valid for 15 seconds)
+      const cached = sessionStorage.getItem('productsHealthStatus');
+      const cachedTimestamp = sessionStorage.getItem('productsHealthTimestamp');
+      if (cached && cachedTimestamp) {
+        const diff = Date.now() - parseInt(cachedTimestamp, 10);
+        if (diff < 15000) {
+          console.log("Using cached product server status:", cached);
+          return cached === 'true';
+        }
+      }
+
+      try {
+        const response = await fetch('http://localhost:5000/health', {
+          signal: AbortSignal.timeout(5000)
+        });
+        const online = response.ok;
+
+        // Cache the result with the current timestamp
+        sessionStorage.setItem('productsHealthStatus', online.toString());
+        sessionStorage.setItem('productsHealthTimestamp', Date.now().toString());
+
+        return online;
+      } catch (err) {
+        console.error("Products health check error:", err);
+        sessionStorage.setItem('productsHealthStatus', 'false');
+        sessionStorage.setItem('productsHealthTimestamp', Date.now().toString());
+        return false;
+      }
+    }
 </script>
 
 <div class="products-container">

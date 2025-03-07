@@ -17,6 +17,7 @@
   import UserProfile from './components/UserProfile.svelte';
   import ProductList from './components/Products.svelte'; // Using Products component as ProductList
   import Cart from './components/Cart.svelte';
+  import CartDrawer from './components/CartDrawer.svelte';
 
   // Dynamically import AdminPanel
   import { fade } from 'svelte/transition';
@@ -26,33 +27,51 @@
   
   // Check if server is ready before initializing app components
   async function checkServerReadiness() {
-    const maxRetries = 5;
-    const retryDelay = 2000;
+    // Check if we have a cached result from a recent health check (15 seconds)
+    const cached = sessionStorage.getItem('serverReadyCached');
+    const cachedTimestamp = sessionStorage.getItem('serverReadyTimestamp');
+    if (cached && cachedTimestamp) {
+      const diff = Date.now() - parseInt(cachedTimestamp);
+      if (diff < 15000) { // use cached result if within 15 seconds
+        serverReady = cached === 'true';
+        console.log("Using cached health check result:", serverReady);
+        return serverReady;
+      }
+    }
+
+    const maxRetries = 3;
+    const baseDelay = 2000;
+    let isReady = false;
     
     for (let i = 0; i < maxRetries; i++) {
       try {
         const response = await fetch('http://localhost:5000/health', {
-          // Longer timeout for initial connection
+          // Use a 5000ms timeout
           signal: AbortSignal.timeout(5000)
         });
-        
         if (response.ok) {
-          console.log("Server is ready");
-          serverReady = true;
-          return true;
+          console.log(`Server is ready (attempt ${i + 1})`);
+          isReady = true;
+          break;
         }
       } catch (err) {
-        console.log(`Server not ready (attempt ${i+1}/${maxRetries}): ${err.message}`);
+        console.log(`Health check attempt ${i + 1} failed: ${err}`);
       }
-      
-      // Wait before retrying
-      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      // Increase delay with each retry (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, baseDelay * (i + 1)));
     }
     
-    console.warn("Could not establish server connection after multiple attempts");
-    // Continue anyway with offline mode
-    serverReady = true;
-    return false;
+    if (!isReady) {
+      console.warn("Health check failed repeatedly – entering offline mode.");
+      // Optionally, you can display an alert or fallback here
+    }
+
+    // Cache the result with the current timestamp
+    sessionStorage.setItem('serverReadyCached', isReady.toString());
+    sessionStorage.setItem('serverReadyTimestamp', Date.now().toString());
+
+    serverReady = isReady;
+    return isReady;
   }
   
   onMount(async () => {
@@ -94,7 +113,8 @@
 </script>
 
 <Router>
-  <Nav />
+  <NavBar {setView} />
+  <CartDrawer />
   
   <div class="container">
     <Route path="/" component={ProductList} />
@@ -127,29 +147,25 @@
     
     <Route path="/cart" component={Cart} />
   </div>
+  <main>
+    {#if $currentView === 'home'}
+      <Home {setView} />
+    {:else if $currentView === 'products'}
+      <Products />
+    {:else if $currentView === 'orders'}
+      <Orders />
+    {:else if $currentView === 'chat'}
+      <Chat />
+    {:else if $currentView === 'payment'}
+      <Payment />
+    {:else if $currentView === 'login'}
+      <Login />
+    {/if}
+  </main>
+  <footer>
+    © 2025 Secure Store. All rights reserved.
+  </footer>
 </Router>
-
-<main>
-  <NavBar {setView} />
-  
-  {#if $currentView === 'home'}
-    <Home {setView} />
-  {:else if $currentView === 'products'}
-    <Products />
-  {:else if $currentView === 'orders'}
-    <Orders />
-  {:else if $currentView === 'chat'}
-    <Chat />
-  {:else if $currentView === 'payment'}
-    <Payment />
-  {:else if $currentView === 'login'}
-    <Login />
-  {/if}
-</main>
-
-<footer>
-  © 2025 Secure Store. All rights reserved.
-</footer>
 
 <style>
   main {

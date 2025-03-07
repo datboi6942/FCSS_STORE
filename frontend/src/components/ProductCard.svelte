@@ -3,6 +3,7 @@
   import { navigate } from 'svelte-routing';
   import { auth } from '../stores/auth.js';
   import { createEventDispatcher } from 'svelte';
+  import { cart } from '../stores/cart.js';
   
   export let product = {};
   
@@ -19,6 +20,9 @@
   
   // Track if we're in offline/demo mode
   let offlineMode = false;
+  
+  // Show a notification when product is added to cart
+  let showAddedNotification = false;
   
   onMount(() => {
     const unsubscribe = auth.subscribe(authData => {
@@ -132,146 +136,14 @@
     }
   }
   
-  async function addToCart() {
-    if (!$auth.isAuthenticated) {
-      alert('Please log in to add items to your cart');
-      return;
-    }
+  function addToCart() {
+    cart.addItem(product);
     
-    try {
-      adding = true;
-      error = null;
-      
-      // Handle offline mode with simulated cart add
-      if (offlineMode) {
-        await new Promise(resolve => setTimeout(resolve, 600));
-        
-        // Get current demo cart or create a new one
-        let demoCart;
-        try {
-          const storedCart = localStorage.getItem('demoCart');
-          demoCart = storedCart ? JSON.parse(storedCart) : { 
-            id: "demo-cart", 
-            user_id: "offline-user",
-            items: [],
-            created_at: new Date().toISOString()
-          };
-        } catch (err) {
-          console.error("Error parsing demo cart:", err);
-          demoCart = { 
-            id: "demo-cart", 
-            user_id: "offline-user",
-            items: [],
-            created_at: new Date().toISOString()
-          };
-        }
-        
-        // Check if product already in cart
-        const existingItemIndex = demoCart.items.findIndex(item => 
-          item.product_id === product.id
-        );
-        
-        if (existingItemIndex >= 0) {
-          // Increment quantity
-          demoCart.items[existingItemIndex].quantity += 1;
-        } else {
-          // Add new item
-          demoCart.items.push({
-            product_id: product.id,
-            name: product.name,
-            price: product.price,
-            quantity: 1
-          });
-        }
-        
-        // Save updated cart to localStorage
-        localStorage.setItem('demoCart', JSON.stringify(demoCart));
-        console.log("Updated demo cart in localStorage:", demoCart);
-        
-        // Update cart badge UI
-        try {
-          const cartBadgeElem = document.querySelector('.cart-badge');
-          if (cartBadgeElem) {
-            const currentCount = parseInt(cartBadgeElem.textContent || '0');
-            cartBadgeElem.textContent = (currentCount + 1).toString();
-          } else {
-            // If no badge exists yet, create one
-            const cartLink = document.querySelector('.cart-link');
-            if (cartLink) {
-              const badge = document.createElement('span');
-              badge.className = 'cart-badge';
-              badge.textContent = '1';
-              cartLink.appendChild(badge);
-            }
-          }
-        } catch (err) {
-          console.log("Could not update cart badge:", err);
-        }
-        
-        addSuccess = true;
-        
-        // Also set a timeout to hide the success message
-        setTimeout(() => {
-          addSuccess = false;
-        }, 3000);
-        
-        // Fire cart updated event
-        dispatch('cartUpdated');
-        
-        // Also dispatch a window event for demo cart
-        window.dispatchEvent(new CustomEvent('demo-add-to-cart', {
-          detail: product
-        }));
-        
-        return;
-      }
-      
-      // Regular online mode
-      const response = await fetch(`${API_BASE_URL}/cart/add`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
-        },
-        body: JSON.stringify({
-          user_id: $auth.user.id,
-          product_id: product.id,
-          quantity: 1
-        })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to add to cart');
-      }
-      
-      addSuccess = true;
-      
-      // Update cart count directly by dispatching a simple event
-      dispatch('cartUpdated');
-      
-      // Also set a timeout to hide the success message
-      setTimeout(() => {
-        addSuccess = false;
-      }, 3000);
-      
-      // For extra reliability, try to directly update the cart badge
-      try {
-        const cartBadgeElem = document.querySelector('.cart-badge');
-        if (cartBadgeElem) {
-          const currentCount = parseInt(cartBadgeElem.textContent || '0');
-          cartBadgeElem.textContent = (currentCount + 1).toString();
-        }
-      } catch (err) {
-        console.log("Could not directly update cart badge");
-      }
-      
-    } catch (err) {
-      console.error('Error adding to cart:', err);
-      error = err.message;
-    } finally {
-      adding = false;
-    }
+    // Show notification
+    showAddedNotification = true;
+    setTimeout(() => {
+      showAddedNotification = false;
+    }, 2000);
   }
 </script>
 
@@ -315,8 +187,8 @@
     {/if}
   </div>
   
-  {#if addSuccess}
-    <div class="success-message">
+  {#if showAddedNotification}
+    <div class="notification">
       Added to cart!
     </div>
   {/if}
@@ -512,5 +384,23 @@
     border-radius: 4px;
     margin-top: 10px;
     text-align: center;
+  }
+  
+  .notification {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background-color: rgba(0,0,0,0.7);
+    color: white;
+    padding: 0.5rem;
+    border-radius: 4px;
+    animation: fade-in-out 2s ease-in-out;
+  }
+  
+  @keyframes fade-in-out {
+    0% { opacity: 0; }
+    15% { opacity: 1; }
+    85% { opacity: 1; }
+    100% { opacity: 0; }
   }
 </style>

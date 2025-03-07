@@ -21,6 +21,9 @@ use actix_web::http::header;
 use log;
 use std::collections::HashMap;
 use crate::cart::CartStore;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use actix_web::post;
 
 pub struct AppState {
     pub db: SqlitePool,
@@ -67,6 +70,46 @@ async fn index() -> impl Responder {
 
 async fn health_check() -> impl Responder {
     HttpResponse::Ok().body("OK")
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CartItem {
+    pub id: String,
+    pub name: String,
+    pub price: f64,
+    pub image: String,
+    pub quantity: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Order {
+    pub order_id: String,
+    pub items: Vec<CartItem>,
+    pub total: f64,
+}
+
+#[post("/api/checkout")]
+pub async fn checkout(cart_items: web::Json<Vec<CartItem>>) -> impl Responder {
+    // Read the cart items from the request body
+    let items = cart_items.into_inner();
+    // Calculate the total order amount
+    let total: f64 = items.iter().map(|item| item.price * (item.quantity as f64)).sum();
+
+    // Create an order with a generated UUID
+    let order = Order {
+        order_id: Uuid::new_v4().to_string(),
+        items,
+        total,
+    };
+
+    // Here you might persist the order in a database.
+    println!("New order received: {:?}", order);
+
+    // Return a JSON response indicating success and include the order details.
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "order": order
+    }))
 }
 
 #[actix_web::main]
@@ -180,6 +223,8 @@ async fn main() -> std::io::Result<()> {
             )
             // Cart routes
             .service(cart::init_routes())
+            // Checkout route
+            .service(checkout)
     })
     .bind("0.0.0.0:5000")?
     .run()

@@ -1,24 +1,44 @@
 <script lang="ts">
   import authStore from '../stores/auth.js';
+  import { Link } from "svelte-routing";
+  import CartIcon from "./CartIcon.svelte";
   export let setView: (view: string) => void;
+  import { tick } from 'svelte';
 
-  function navigate(view) {
-    setView(view);
+  // Flag to prevent rapid-fire clicks on the Products link
+  let productsDisabled = false;
+
+  function handleProductsClick(e: MouseEvent) {
+    if (productsDisabled) {
+      // Prevent navigation if already clicked recently
+      e.preventDefault();
+      return;
+    }
+    productsDisabled = true;
+    // Re-enable navigation after 1 second
+    setTimeout(() => {
+      productsDisabled = false;
+    }, 1000);
   }
 </script>
 
 <nav class="navbar">
   <div class="brand">
-    <button on:click={() => navigate('home')}>Secure Store</button>
+    <Link to="/">FCSS STORE</Link>
   </div>
   
   <div class="nav-links">
-    <button on:click={() => navigate('home')}>Home</button>
-    <button on:click={() => navigate('products')}>Products</button>
-    <button on:click={() => navigate('orders')}>Orders</button>
-    <button on:click={() => navigate('chat')}>Chat</button>
-    <button on:click={() => navigate('payment')}>Payment</button>
-    <button on:click={() => navigate('login')}>Login</button>
+    <Link to="/">Home</Link>
+    <Link to="/products" on:click={handleProductsClick}>Products</Link>
+    <Link to="/cart">Cart</Link>
+    <button on:click={() => setView('orders')}>Orders</button>
+    <button on:click={() => setView('chat')}>Chat</button>
+    <button on:click={() => setView('payment')}>Payment</button>
+    <button on:click={() => setView('login')}>Login</button>
+  </div>
+  
+  <div class="nav-actions">
+    <CartIcon />
   </div>
 </nav>
 
@@ -58,5 +78,15 @@
   
   .nav-links button:hover {
     background-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  .nav-actions {
+    display: flex;
+    align-items: center;
+  }
+  
+  a {
+    color: inherit;
+    text-decoration: none;
   }
 </style>
