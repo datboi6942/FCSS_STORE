@@ -1,6 +1,11 @@
 <script>
   import { cart, cartTotal } from '../../stores/cart.js';
   import { goto } from '$app/navigation';
+  import { onMount } from 'svelte';
+  import MoneroCheckout from '../../components/MoneroCheckout.svelte';
+  
+  let checkoutStarted = false;
+  let orderId = '';
   
   function updateQuantity(id, newQuantity) {
     if (newQuantity > 0) {
@@ -21,24 +26,12 @@
   function checkout() {
     if ($cart.items.length === 0) return;
     
-    // Call your Rust backend
-    fetch('/api/checkout', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify($cart.items)
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        cart.clearCart();
-        goto('/checkout/success');
-      }
-    })
-    .catch(error => {
-      console.error('Checkout error:', error);
-    });
+    // Generate an order ID and proceed to Monero checkout
+    orderId = 'order-' + Date.now();
+    checkoutStarted = true;
+    
+    // In a real implementation, you would call the backend to create an order first
+    // and then use the returned order ID for payment
   }
 </script>
 
@@ -49,72 +42,64 @@
 <div class="cart-page">
   <h1>Your Shopping Cart</h1>
   
-  {#if $cart.items.length === 0}
-    <div class="empty-cart">
-      <p>Your cart is empty</p>
-      <button class="btn continue-btn" on:click={continueShopping}>
-        Start Shopping
-      </button>
-    </div>
+  {#if !checkoutStarted}
+    {#if $cart.items.length > 0}
+      <div class="cart-container">
+        <div class="cart-items">
+          {#each $cart.items as item}
+            <div class="cart-item">
+              <img src={item.image} alt={item.name} class="item-image">
+              <div class="item-details">
+                <h3>{item.name}</h3>
+                <p class="item-price">${item.price.toFixed(2)}</p>
+              </div>
+              <div class="item-quantity">
+                <button on:click={() => updateQuantity(item.id, item.quantity - 1)}>-</button>
+                <span>{item.quantity}</span>
+                <button on:click={() => updateQuantity(item.id, item.quantity + 1)}>+</button>
+              </div>
+              <div class="item-total">${(item.price * item.quantity).toFixed(2)}</div>
+              <button class="remove-btn" on:click={() => removeItem(item.id)}>×</button>
+            </div>
+          {/each}
+        </div>
+        
+        <div class="cart-summary">
+          <h2>Order Summary</h2>
+          
+          <div class="summary-row">
+            <span>Subtotal:</span>
+            <span>${$cartTotal.toFixed(2)}</span>
+          </div>
+          
+          <div class="summary-row">
+            <span>Tax:</span>
+            <span>${($cartTotal * 0.07).toFixed(2)}</span>
+          </div>
+          
+          <div class="summary-row total">
+            <span>Total:</span>
+            <span>${($cartTotal * 1.07).toFixed(2)}</span>
+          </div>
+          
+          <div class="payment-notice">
+            <p><strong>Payment Method:</strong> Monero (XMR) cryptocurrency</p>
+            <p class="payment-info">Payments are processed securely using Monero, offering complete privacy and security.</p>
+          </div>
+          
+          <button class="btn checkout-btn" on:click={checkout}>Proceed to Checkout</button>
+          <button class="btn continue-btn" on:click={continueShopping}>Continue Shopping</button>
+        </div>
+      </div>
+    {:else}
+      <div class="empty-cart">
+        <p>Your cart is empty</p>
+        <button class="btn continue-btn" on:click={continueShopping}>Start Shopping</button>
+      </div>
+    {/if}
   {:else}
-    <div class="cart-container">
-      <div class="cart-items">
-        <table>
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>Price</th>
-              <th>Quantity</th>
-              <th>Total</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each $cart.items as item (item.id)}
-              <tr class="cart-item">
-                <td class="product-cell">
-                  <img src={item.image} alt={item.name} class="product-image">
-                  <span class="product-name">{item.name}</span>
-                </td>
-                <td>${item.price.toFixed(2)}</td>
-                <td>
-                  <div class="quantity-controls">
-                    <button on:click={() => updateQuantity(item.id, item.quantity - 1)}>-</button>
-                    <span>{item.quantity}</span>
-                    <button on:click={() => updateQuantity(item.id, item.quantity + 1)}>+</button>
-                  </div>
-                </td>
-                <td>${(item.price * item.quantity).toFixed(2)}</td>
-                <td>
-                  <button class="remove-btn" on:click={() => removeItem(item.id)}>×</button>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-      
-      <div class="cart-summary">
-        <h2>Order Summary</h2>
-        <div class="summary-row">
-          <span>Subtotal:</span>
-          <span>${$cartTotal.toFixed(2)}</span>
-        </div>
-        <div class="summary-row">
-          <span>Shipping:</span>
-          <span>$0.00</span>
-        </div>
-        <div class="summary-row total">
-          <span>Total:</span>
-          <span>${$cartTotal.toFixed(2)}</span>
-        </div>
-        <button class="btn checkout-btn" on:click={checkout}>
-          Proceed to Checkout
-        </button>
-        <button class="btn continue-btn" on:click={continueShopping}>
-          Continue Shopping
-        </button>
-      </div>
+    <div class="checkout-container">
+      <MoneroCheckout {orderId} />
     </div>
   {/if}
 </div>
@@ -123,7 +108,7 @@
   .cart-page {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 2rem;
+    padding: 1rem;
   }
   
   h1 {
@@ -241,5 +226,23 @@
     .cart-container {
       grid-template-columns: 1fr;
     }
+  }
+  
+  .payment-notice {
+    margin: 1.5rem 0;
+    padding: 1rem;
+    background-color: #f0f8ff;
+    border-radius: 4px;
+    border-left: 4px solid #2196f3;
+  }
+  
+  .payment-info {
+    font-size: 0.9rem;
+    color: #666;
+    margin-top: 0.5rem;
+  }
+  
+  .checkout-container {
+    margin-top: 2rem;
   }
 </style> 

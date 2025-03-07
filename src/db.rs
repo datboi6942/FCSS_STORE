@@ -1,10 +1,9 @@
 // src/db.rs
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use log::info;
-use std::{fs, path::Path};
 
 pub async fn create_pool() -> SqlitePool {
-    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./data/sqlite.db".to_string());
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:src/secure_store.db".to_string());
     
     // Retry database connection multiple times
     let max_retries = 5;

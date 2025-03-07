@@ -18,6 +18,7 @@
   import ProductList from './components/Products.svelte'; // Using Products component as ProductList
   import Cart from './components/Cart.svelte';
   import CartDrawer from './components/CartDrawer.svelte';
+  // import CartIcon from './components/CartIcon.svelte';
 
   // Dynamically import AdminPanel
   import { fade } from 'svelte/transition';
@@ -110,16 +111,27 @@
       });
     }
   });
+
+  // Local state for cart drawer visibility
+  let isCartOpen = false;
+  
+  function handleToggleCart() {
+    isCartOpen = !isCartOpen;
+  }
+
+  import MoneroCheckout from './routes/checkout/monero/+page.svelte';
 </script>
 
 <Router>
-  <NavBar {setView} />
-  <CartDrawer />
+  <NavBar {setView} onToggleCart={handleToggleCart} />
+  
+  <CartDrawer isOpen={isCartOpen} />
   
   <div class="container">
     <Route path="/" component={ProductList} />
     <Route path="/login" component={Login} />
     <Route path="/products" component={ProductList} />
+    <Route path="/checkout/monero" component={MoneroCheckout} />
     
     <Route path="/profile">
       <ProtectedRoute>

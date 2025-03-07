@@ -1,10 +1,11 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpResponse, Responder, post, get};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use uuid::Uuid;
 use log::{info, error};
 use crate::AppState;
+use crate::monero::MoneroPaymentRequest;
 
 // Define our data structures
 pub type CartStore = Mutex<HashMap<String, Cart>>;
@@ -24,6 +25,7 @@ pub struct CartItem {
     pub quantity: i32,
     pub price: f64,
     pub name: String,
+    pub image: Option<String>,
 }
 
 // Request models
@@ -40,9 +42,18 @@ pub struct CartItemId {
     pub item_index: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct CheckoutRequest {
-    pub cart_id: String,
+    pub items: Vec<CartItem>,
+    pub total: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CheckoutResponse {
+    pub success: bool,
+    pub order_id: String,
+    pub payment: Option<MoneroPaymentRequest>,
+    pub message: Option<String>,
 }
 
 // Helper function to get or create a cart
@@ -133,6 +144,7 @@ pub async fn add_to_cart(
             quantity: add_request.quantity,
             price: product.price,
             name: product.name.clone(),
+            image: None,
         });
     }
     
@@ -205,48 +217,35 @@ pub async fn get_cart(
     HttpResponse::Ok().json(empty_cart)
 }
 
-// Checkout cart
-pub async fn checkout_cart(
-    query: web::Query<CheckoutRequest>,
-    state: web::Data<AppState>
+// New checkout endpoint that uses Monero payments
+#[post("/api/checkout")]
+#[allow(non_snake_case)]
+pub async fn checkout(
+    app_state: web::Data<AppState>,
+    checkout_data: web::Json<CheckoutRequest>,
 ) -> impl Responder {
-    let cart_id = &query.cart_id;
+    // Add debug logging
+    println!("Received checkout request: {:?}", checkout_data);
     
-    info!("Checking out cart {}", cart_id);
+    // Create a unique order ID
+    let order_id = Uuid::new_v4().to_string();
     
-    // Find the cart
-    let carts = state.carts.lock().unwrap();
-    if let Some(cart) = carts.get(cart_id) {
-        if cart.items.is_empty() {
-            return HttpResponse::BadRequest().json(
-                serde_json::json!({"error": "Cannot checkout empty cart"})
-            );
-        }
-        
-        // Calculate total
-        let total: f64 = cart.items.iter()
-            .map(|item| item.price * item.quantity as f64)
-            .sum();
-        
-        // In a real system, we would create an order here
-        
-        return HttpResponse::Ok().json(serde_json::json!({
-            "success": true,
-            "cart_id": cart_id,
-            "total": total,
-            "items": cart.items,
-            "payment_info": {
-                "amount": total,
-                "currency": "USD",
-                "crypto_address": "0xabc123...def456", // Example address
-                "payment_methods": ["BTC", "ETH", "USDT"]
-            }
-        }));
-    }
+    // Create Monero payment request
+    let total_amount = checkout_data.total;
+    let payment = app_state.monero_payments.create_payment_usd(order_id.clone(), total_amount);
     
-    HttpResponse::NotFound().json(
-        serde_json::json!({"error": "Cart not found"})
-    )
+    // Add debug logging
+    println!("Created Monero payment: {:?}", payment);
+    
+    // Return the checkout response with payment details
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(CheckoutResponse {
+            success: true,
+            order_id,
+            payment: Some(payment),
+            message: Some("Please send Monero to the provided address".to_string()),
+        })
 }
 
 // Initialize routes
@@ -255,5 +254,4 @@ pub fn init_routes() -> actix_web::Scope {
         .route("/add", web::post().to(add_to_cart))
         .route("/{user_id}", web::get().to(get_cart))
         .route("/remove/{cart_id}/{item_index}", web::delete().to(remove_from_cart))
-        .route("/checkout", web::post().to(checkout_cart))
 }

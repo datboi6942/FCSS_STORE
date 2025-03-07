@@ -20,6 +20,9 @@
       productsDisabled = false;
     }, 1000);
   }
+
+  // Accept the toggle handler from parent
+  export let onToggleCart = () => {}; // Default empty function
 </script>
 
 <nav class="navbar">
@@ -38,7 +41,7 @@
   </div>
   
   <div class="nav-actions">
-    <CartIcon />
+    <CartIcon on:toggleCart={onToggleCart} />
   </div>
 </nav>
 

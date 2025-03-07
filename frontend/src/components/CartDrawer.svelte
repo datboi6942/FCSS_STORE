@@ -1,9 +1,20 @@
 <script>
   import { cart, cartTotal } from '../stores/cart.js';
   import { fly } from 'svelte/transition';
+  import { createEventDispatcher, onMount } from 'svelte';
   
-  function closeCart() {
-    cart.toggleCart();
+  const dispatch = createEventDispatcher();
+  export let isOpen = false;
+  
+  // Initialize a local cart variable
+  let cartItems = [];
+  
+  // Update local cart variable when store changes
+  $: cartItems = $cart || [];
+  
+  function close() {
+    dispatch('close');
+    isOpen = false;
   }
   
   function removeItem(id) {
@@ -18,32 +29,49 @@
     }
   }
   
-  function checkout() {
-    // Send cart data to your Rust backend
-    fetch('/api/checkout', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify($cart.items)
-    })
-    .then(response => response.json())
-    .then(data => {
-      if (data.success) {
-        cart.clearCart();
-        closeCart();
-        // Redirect to confirmation page or show success message
+  function clearCart() {
+    cart.clear();
+  }
+  
+  async function checkout() {
+    try {
+      const checkoutData = {
+        items: $cart || [],
+        total: $cartTotal || 0
+      };
+      
+      const response = await fetch('http://localhost:5000/api/direct-checkout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify(checkoutData)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Server responded with ${response.status}`);
       }
-    })
-    .catch(error => {
-      console.error('Checkout error:', error);
-      // Show error message
-    });
+      
+      const data = await response.json();
+      
+      if (data.success && data.payment) {
+        localStorage.setItem('monero_payment', JSON.stringify(data.payment));
+        close(); // Close the cart drawer before navigation
+        window.location.href = '/checkout/monero';
+      } else {
+        throw new Error(data.message || 'Checkout failed');
+      }
+    } catch (error) {
+      console.error("Checkout error:", error);
+      alert(`Checkout failed: ${error.message}`);
+    }
   }
 </script>
 
-{#if $cart.isOpen}
-  <div class="cart-overlay" on:click={closeCart}>
+{#if isOpen}
+  <div class="cart-overlay" on:click={close}>
     <div 
       class="cart-drawer" 
       on:click|stopPropagation 
@@ -51,19 +79,19 @@
     >
       <div class="cart-header">
         <h2>Your Cart</h2>
-        <button class="close-btn" on:click={closeCart}>×</button>
+        <button class="close-btn" on:click={close}>×</button>
       </div>
       
-      {#if $cart.items.length === 0}
+      {#if !cartItems || cartItems.length === 0}
         <div class="empty-cart">
           <p>Your cart is empty</p>
-          <button class="continue-btn" on:click={closeCart}>
+          <button class="continue-btn" on:click={close}>
             Continue Shopping
           </button>
         </div>
       {:else}
         <div class="cart-items">
-          {#each $cart.items as item (item.id)}
+          {#each cartItems as item (item.id)}
             <div class="cart-item">
               <img src={item.image} alt={item.name} class="item-image" />
               <div class="item-details">
@@ -86,9 +114,12 @@
             <span>Total:</span>
             <span>${$cartTotal.toFixed(2)}</span>
           </div>
-          <button class="checkout-btn" on:click={checkout}>
-            Proceed to Checkout
-          </button>
+          <div class="cart-actions">
+            <button class="clear-btn" on:click={clearCart}>Clear Cart</button>
+            <button class="checkout-btn" on:click={checkout} disabled={$cart.length === 0}>
+              Checkout with Monero
+            </button>
+          </div>
         </div>
       {/if}
     </div>
@@ -209,13 +240,22 @@
   }
   
   .checkout-btn {
-    width: 100%;
-    padding: 0.75rem;
-    background-color: #ff3e00;
+    background-color: #ff6600;
     color: white;
     border: none;
+    padding: 10px 15px;
     border-radius: 4px;
     cursor: pointer;
+    transition: background-color 0.3s;
+  }
+  
+  .checkout-btn:hover {
+    background-color: #ff8533;
+  }
+  
+  .checkout-btn:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
   }
   
   .empty-cart {

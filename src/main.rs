@@ -11,6 +11,10 @@ mod db; // New database module
 mod setup_db;
 mod middleware;
 mod cart;
+mod monero;
+mod monero_api;
+mod monero_admin;
+mod monero_wallet;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware::Logger};
 use std::sync::{Mutex, Arc};
@@ -24,11 +28,13 @@ use crate::cart::CartStore;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use actix_web::post;
+use crate::monero::MoneroPaymentStore;
 
 pub struct AppState {
     pub db: SqlitePool,
     pub chat_history: Arc<Mutex<Vec<chat::ChatMessage>>>,
     pub carts: CartStore,
+    pub monero_payments: MoneroPaymentStore,
 }
 
 async fn index() -> impl Responder {
@@ -112,6 +118,33 @@ pub async fn checkout(cart_items: web::Json<Vec<CartItem>>) -> impl Responder {
     }))
 }
 
+#[post("/api/direct-checkout")]
+pub async fn direct_checkout(
+    app_state: web::Data<AppState>,
+    checkout_data: web::Json<serde_json::Value>,
+) -> impl Responder {
+    println!("Received direct checkout request: {:?}", checkout_data);
+    
+    // Generate a unique order ID
+    let order_id = Uuid::new_v4().to_string();
+    
+    // Extract total amount from checkout data or use a default
+    let total_amount = checkout_data.get("total")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(10.0); // Default to 10.0 if total is not provided
+    
+    // Create Monero payment request
+    let payment = app_state.monero_payments.create_payment_usd(order_id.clone(), total_amount);
+    
+    // Return the checkout response
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "order_id": order_id,
+        "payment": payment,
+        "message": "Please send Monero to the provided address"
+    }))
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -156,12 +189,19 @@ async fn main() -> std::io::Result<()> {
         db: pool,
         chat_history,
         carts,
+        monero_payments: MoneroPaymentStore::new(),
     });
     
     // Add auto-purge system
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {
         auto_purge::start_auto_purge(app_state_clone).await;
+    });
+
+    // Start Monero payment checker
+    let app_state_clone = app_state.clone();
+    tokio::spawn(async move {
+        monero_api::start_payment_checker(app_state_clone);
     });
 
     // Add the waiting delay before starting the server
@@ -180,13 +220,16 @@ async fn main() -> std::io::Result<()> {
             .allowed_origin("http://localhost:5173")
             .allowed_origin("http://127.0.0.1:5173")
             .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
-            .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE])
-            .supports_credentials();
+            .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+            .supports_credentials()
+            .max_age(3600);
         
         App::new()
             .wrap(Logger::default())
             .wrap(cors)
             .app_data(app_state.clone())
+            .service(direct_checkout)
+            .service(cart::checkout)
             .route("/", web::get().to(index))
             .route("/health", web::get().to(health_check))
             // Auth routes
@@ -223,8 +266,13 @@ async fn main() -> std::io::Result<()> {
             )
             // Cart routes
             .service(cart::init_routes())
-            // Checkout route
-            .service(checkout)
+            // Monero routes
+            .service(monero_api::init_routes())
+            // Monero admin routes
+            .service(
+                web::scope("/api")
+                    .service(monero_admin::init_routes())
+            )
     })
     .bind("0.0.0.0:5000")?
     .run()

@@ -14,5 +14,14 @@ export default defineConfig({
         main: 'src/main.ts'
       }
     }
+  },
+  resolve: {
+    alias: {
+      $lib: '/src/lib',
+      $components: '/src/components'
+    }
+  },
+  optimizeDeps: {
+    include: ['qrcode']
   }
 });
