@@ -1,5 +1,6 @@
 <script>
-    export let setView;
+    // Make setView optional with a default no-op function
+    export let setView = () => {}; 
   </script>
   
   <section class="hero">

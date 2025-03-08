@@ -20,7 +20,10 @@
   import CartDrawer from './components/CartDrawer.svelte';
   import ShippingFormOverlay from './components/ShippingFormOverlay.svelte';
   import MoneroCheckout from './routes/MoneroCheckout.svelte';
-
+  import AdminProducts from './components/AdminProducts.svelte';
+  import AdminUsers from './components/AdminUsers.svelte';
+  import OrderValidator from './components/OrderValidator.svelte';
+  
   // Dynamically import AdminPanel
   import { fade } from 'svelte/transition';
   let AdminPanel;
@@ -80,9 +83,17 @@
   
   onMount(async () => {
     await checkServerReadiness();
-    // Dynamically load the AdminPanel component
-    const module = await import('./components/AdminPanel.svelte');
-    AdminPanel = module.default;
+    // Add event listener for Buy Now button
+    document.addEventListener('showShipping', () => {
+      showShippingForm = true;
+    });
+    
+    // Cleanup
+    return () => {
+      document.removeEventListener('showShipping', () => {
+        showShippingForm = true;
+      });
+    };
   });
   
   // For compatibility with the old navigation system
@@ -193,9 +204,13 @@
   <CartDrawer isOpen={isCartOpen} />
   
   <div class="container">
-    <Route path="/" component={ProductList} />
+    <Route path="/" exact>
+      <Home {setView} />
+    </Route>
     <Route path="/login" component={Login} />
     <Route path="/products" component={ProductList} />
+    <Route path="/orders" component={Orders} />
+    <Route path="/chat" component={Chat} />
     <Route 
       path="/monero/checkout/:order_id" 
       let:params
@@ -230,23 +245,27 @@
     <Route path="/order-status" component={OrderStatus} />
     <Route path="/admin/orders">
       <ProtectedRoute requiredRole="admin">
-        <AdminOrders />
+        <OrderValidator />
       </ProtectedRoute>
     </Route>
+    <Route path="/admin/products">
+      <ProtectedRoute requiredRole="admin">
+        <AdminProducts />
+      </ProtectedRoute>
+    </Route>
+    <Route path="/admin/users">
+      <ProtectedRoute requiredRole="admin">
+        <AdminUsers />
+      </ProtectedRoute>
+    </Route>
+    <Route path="*" let:location>
+      <div style="padding: 20px; border: 2px solid red;">
+        <h3>Debug: Route Not Found</h3>
+        <p>The current path is: {location.pathname}</p>
+      </div>
+    </Route>
   </div>
-  <main>
-    {#if $currentView === 'home'}
-      <Home {setView} />
-    {:else if $currentView === 'products'}
-      <Products />
-    {:else if $currentView === 'orders'}
-      <Orders />
-    {:else if $currentView === 'chat'}
-      <Chat />
-    {:else if $currentView === 'login'}
-      <Login />
-    {/if}
-  </main>
+  
   <footer>
     © 2025 Secure Store. All rights reserved.
   </footer>

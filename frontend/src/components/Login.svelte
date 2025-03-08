@@ -63,7 +63,7 @@
       }
       
       // Regular user login
-      const response = await fetch('http://127.0.0.1:8443/auth/login', {
+      const response = await fetch('http://127.0.0.1:5000/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -108,7 +108,7 @@
       isLoading = true;
       errorMessage = '';
       
-      const response = await fetch('http://127.0.0.1:8443/auth/register', {
+      const response = await fetch('http://127.0.0.1:5000/auth/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

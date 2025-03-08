@@ -555,6 +555,95 @@ pub async fn get_order_payment(
     }
 }
 
+#[get("/admin/orders")]
+pub async fn get_all_orders(app_state: web::Data<AppState>) -> impl Responder {
+    match sqlx::query!(
+        r#"
+        SELECT o.*, mp.address as monero_address, mp.status as payment_status
+        FROM orders o
+        LEFT JOIN monero_payments mp ON o.payment_id = mp.payment_id
+        ORDER BY o.created_at DESC
+        "#
+    )
+    .fetch_all(&app_state.db)
+    .await {
+        Ok(orders) => {
+            let orders = orders.into_iter().map(|row| {
+                json!({
+                    "id": row.id,
+                    "payment_id": row.payment_id,
+                    "monero_address": row.monero_address,
+                    "total_amount": row.total_amount,
+                    "status": row.status,
+                    "created_at": row.created_at,
+                    "payment_status": row.payment_status
+                })
+            }).collect::<Vec<_>>();
+
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "orders": orders
+            }))
+        },
+        Err(e) => {
+            log::error!("Failed to fetch orders: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Failed to fetch orders"
+            }))
+        }
+    }
+}
+
+#[get("/admin/validate/{order_id}")]
+pub async fn validate_order(
+    app_state: web::Data<AppState>,
+    path: web::Path<String>
+) -> impl Responder {
+    let order_id = path.into_inner();
+    
+    match sqlx::query!(
+        r#"
+        SELECT o.*, mp.address as monero_address, mp.status as payment_status
+        FROM orders o
+        LEFT JOIN monero_payments mp ON o.payment_id = mp.payment_id
+        WHERE o.id = ?
+        "#,
+        order_id
+    )
+    .fetch_optional(&app_state.db)
+    .await {
+        Ok(Some(order)) => {
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "valid": true,
+                "order": {
+                    "id": order.id,
+                    "payment_id": order.payment_id,
+                    "monero_address": order.monero_address,
+                    "total_amount": order.total_amount,
+                    "status": order.status,
+                    "created_at": order.created_at,
+                    "payment_status": order.payment_status
+                }
+            }))
+        },
+        Ok(None) => {
+            HttpResponse::NotFound().json(json!({
+                "success": false,
+                "error": "Order not found"
+            }))
+        },
+        Err(e) => {
+            log::error!("Failed to validate order: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Failed to validate order"
+            }))
+        }
+    }
+}
+
 pub fn init_routes() -> actix_web::Scope {
     web::scope("/monero")
         .service(create_payment)
@@ -570,6 +659,8 @@ pub fn init_routes() -> actix_web::Scope {
         .service(debug_info)
         .service(list_routes)
         .service(get_order_payment)
+        .service(get_all_orders)
+        .service(validate_order)
 }
 
 // First, let's fix the function that adds the column

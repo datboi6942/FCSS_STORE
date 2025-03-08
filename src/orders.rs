@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, Responder, HttpRequest};
+use actix_web::{web, HttpResponse, Responder, HttpRequest, get};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::Utc;
@@ -294,8 +294,11 @@ pub fn init_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/orders")
             .route("/create", web::post().to(create_order_handler))
-            .route("/status/{order_id}", web::get().to(check_order_status))
+            .service(get_order_status_endpoint)
             .route("/update/{order_id}", web::post().to(update_order_status_handler))
+            .service(get_authenticated_user_orders)
+            .route("/create-test", web::post().to(create_test_order))
+            .service(debug_orders)
     );
 }
 
@@ -406,8 +409,14 @@ impl ToString for OrderStatus {
     }
 }
 
-// Add this new function to create a test order for admin panel verification
-pub async fn create_test_order(state: web::Data<AppState>) -> impl Responder {
+// Update the create_test_order function to use the token user ID
+pub async fn create_test_order(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
+    // Extract user ID from token
+    let user_id = match extract_user_id_from_token(&req) {
+        Some(id) => id,
+        None => "usr-user1".to_string() // Default to test user if no token
+    };
+    
     // Create a test monero payment first
     let payment_id = format!("pay-test-{}", Uuid::new_v4().simple());
     let now = Utc::now().timestamp();
@@ -444,7 +453,7 @@ pub async fn create_test_order(state: web::Data<AppState>) -> impl Responder {
 
     let result = sqlx::query("INSERT INTO orders (id, user_id, payment_id, status, shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, shipping_country, shipping_email, total_amount, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(&order_id)
-        .bind("usr-user1")
+        .bind(&user_id)
         .bind(&payment_id)
         .bind("Pending")
         .bind(&shipping_info.name)
@@ -596,5 +605,169 @@ pub async fn update_order_status_handler(
         Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
             "error": format!("Failed to update order status: {}", e)
         }))
+    }
+}
+
+// Add this new endpoint for public order status lookup
+#[get("/status/{id}")]
+pub async fn get_order_status_endpoint(path: web::Path<String>, app_state: web::Data<AppState>) -> impl Responder {
+    // Make it explicit that this endpoint is public - no auth check needed
+    let order_id = path.into_inner();
+    info!("Public order lookup for ID: {}", order_id);
+    
+    // Query to get order with limited information for public access
+    let query = r#"
+        SELECT id, status, total_amount, created_at, updated_at, 
+               shipping_name, shipping_address, shipping_city, shipping_state,
+               shipping_zip, shipping_country, payment_id
+        FROM orders 
+        WHERE id = ?
+    "#;
+    
+    match sqlx::query(query)
+        .bind(&order_id)
+        .fetch_optional(&app_state.db)
+        .await {
+            Ok(Some(row)) => {
+                info!("Order found: {}", order_id);
+                // Return limited order information
+                let order = json!({
+                    "id": row.get::<String, _>("id"),
+                    "status": row.get::<String, _>("status"),
+                    "total_amount": row.get::<f64, _>("total_amount"),
+                    "created_at": row.get::<i64, _>("created_at"),
+                    "updated_at": row.get::<i64, _>("updated_at"),
+                    "shipping_name": row.get::<String, _>("shipping_name"),
+                    "shipping_address": row.get::<String, _>("shipping_address"),
+                    "shipping_city": row.get::<String, _>("shipping_city"),
+                    "shipping_state": row.get::<String, _>("shipping_state"),
+                    "shipping_zip": row.get::<String, _>("shipping_zip"),
+                    "shipping_country": row.get::<String, _>("shipping_country"),
+                    "payment_id": row.get::<Option<String>, _>("payment_id")
+                });
+                
+                HttpResponse::Ok().json(json!({
+                    "success": true,
+                    "order": order
+                }))
+            },
+            Ok(None) => {
+                info!("Order not found: {}", order_id);
+                HttpResponse::NotFound().json(json!({
+                    "success": false,
+                    "error": "Order not found"
+                }))
+            },
+            Err(e) => {
+                error!("Database error looking up order status: {}", e);
+                HttpResponse::InternalServerError().json(json!({
+                    "success": false,
+                    "error": "Failed to retrieve order information"
+                }))
+            }
+        }
+}
+
+// Add this endpoint to get authenticated user's orders
+#[get("/my-orders")]
+pub async fn get_authenticated_user_orders(req: HttpRequest, app_state: web::Data<AppState>) -> impl Responder {
+    // Extract user ID from authentication token
+    let user_id = match extract_user_id_from_token(&req) {
+        Some(id) => id,
+        None => {
+            return HttpResponse::Unauthorized().json(json!({
+                "success": false,
+                "error": "Authentication required"
+            }));
+        }
+    };
+    
+    // Query to get user's orders
+    let query = r#"
+        SELECT id, status, total_amount, created_at, updated_at, payment_id
+        FROM orders 
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+    "#;
+    
+    match sqlx::query(query)
+        .bind(&user_id)
+        .fetch_all(&app_state.db)
+        .await {
+            Ok(rows) => {
+                let orders = rows.iter().map(|row| {
+                    json!({
+                        "id": row.get::<String, _>("id"),
+                        "status": row.get::<String, _>("status"),
+                        "total_amount": row.get::<f64, _>("total_amount"),
+                        "created_at": row.get::<i64, _>("created_at"),
+                        "updated_at": row.get::<i64, _>("updated_at"),
+                        "payment_id": row.get::<Option<String>, _>("payment_id")
+                    })
+                }).collect::<Vec<_>>();
+                
+                HttpResponse::Ok().json(json!({
+                    "success": true,
+                    "orders": orders
+                }))
+            },
+            Err(e) => {
+                error!("Database error fetching user orders: {}", e);
+                HttpResponse::InternalServerError().json(json!({
+                    "success": false,
+                    "error": "Failed to retrieve orders"
+                }))
+            }
+        }
+}
+
+// Update the extract_user_id_from_token function
+fn extract_user_id_from_token(req: &HttpRequest) -> Option<String> {
+    if let Some(auth_header) = req.headers().get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if auth_str.starts_with("Bearer ") {
+                // Check for admin token
+                if auth_str.contains("admin-token") {
+                    // For admin tokens, return a test user ID that has orders
+                    return Some("usr-user1".to_string());
+                }
+                
+                // For regular tokens, you would decode the JWT
+                // But for now just return the test user ID
+                return Some("usr-user1".to_string());
+            }
+        }
+    }
+    None
+}
+
+// Near the top of your file, add this debugging route
+#[get("/debug-orders")]
+pub async fn debug_orders(app_state: web::Data<AppState>) -> impl Responder {
+    // Print all orders in the database
+    match sqlx::query("SELECT * FROM orders").fetch_all(&app_state.db).await {
+        Ok(rows) => {
+            let result: Vec<serde_json::Value> = rows.iter().map(|row| {
+                json!({
+                    "id": row.get::<String, _>("id"),
+                    "status": row.get::<String, _>("status"),
+                    "total_amount": row.get::<f64, _>("total_amount"),
+                    "created_at": row.get::<i64, _>("created_at"),
+                })
+            }).collect();
+            
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "orders": result,
+                "count": result.len()
+            }))
+        },
+        Err(e) => {
+            error!("Failed to fetch orders for debugging: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Database error: {}", e)
+            }))
+        }
     }
 }

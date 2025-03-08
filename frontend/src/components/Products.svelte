@@ -2,6 +2,8 @@
     import { onMount } from 'svelte';
     import { auth } from '../stores/auth.js';
     import ProductCard from './ProductCard.svelte';
+    import { cartItems } from '../stores/cart.js';
+    import { fade } from 'svelte/transition';
     
     // Direct API URL
     const API_URL = 'http://localhost:5000/products';
@@ -430,6 +432,34 @@
         return false;
       }
     }
+
+    function addToCart(product) {
+      cartItems.update(items => {
+        const existingItem = items.find(item => item.id === product.id);
+        if (existingItem) {
+          return items.map(item => 
+            item.id === product.id 
+              ? {...item, quantity: item.quantity + 1}
+              : item
+          );
+        }
+        return [...items, { ...product, quantity: 1 }];
+      });
+    }
+
+    // Add this function to handle "Buy Now"
+    function handleBuyNow(product) {
+      // Clear the cart first
+      cartItems.set([]);
+      // Add this product to cart
+      cartItems.update(items => [...items, { ...product, quantity: 1 }]);
+      // Dispatch custom event to show shipping form
+      const event = new CustomEvent('showShipping', {
+        bubbles: true,
+        composed: true
+      });
+      document.dispatchEvent(event);
+    }
 </script>
 
 <div class="products-container">
@@ -482,21 +512,26 @@
     {/if}
     
     <div class="products-grid">
-      {#each products as product (product.id || Math.random())}
-        <div class="product-wrapper">
-          <ProductCard {product} on:cartUpdated={handleCartUpdated} />
-          <div class="product-status">
-            {#if isProductInDatabase(product)}
-              <span class="db-status stored">✓ In Database</span>
-            {:else if product.id && product.id.startsWith('pending-')}
-              <span class="db-status pending">⌛ Pending Sync</span>
-            {:else if product.id && product.id.startsWith('local-')}
-              <span class="db-status local">💾 Local Only</span>
-            {:else if product.id && product.id.startsWith('fb')}
-              <span class="db-status demo">👁️ Demo Product</span>
-            {:else}
-              <span class="db-status unknown">? Unknown Status</span>
-            {/if}
+      {#each products as product (product.id)}
+        <div class="product-card" transition:fade>
+          <img src={product.image || '/placeholder.png'} alt={product.name} />
+          <h3>{product.name}</h3>
+          <p>{product.description}</p>
+          <div class="price">${product.price.toFixed(2)}</div>
+          <div class="button-group">
+            <!-- Update the button to use handleBuyNow -->
+            <button 
+              class="buy-now" 
+              on:click={() => handleBuyNow(product)}
+            >
+              Buy Now
+            </button>
+            <button 
+              class="add-to-cart" 
+              on:click={() => addToCart(product)}
+            >
+              Add to Cart
+            </button>
           </div>
         </div>
       {/each}
@@ -614,8 +649,9 @@
   
   .products-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
     gap: 20px;
+    padding: 20px;
   }
   
   .admin-section {
@@ -746,43 +782,59 @@
     cursor: not-allowed;
   }
   
-  .product-wrapper {
-    position: relative;
+  .product-card {
+    background: white;
+    border-radius: 8px;
+    padding: 15px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: transform 0.2s;
   }
   
-  .product-status {
-    position: absolute;
-    top: 10px;
-    left: 10px;
-    z-index: 10;
+  .product-card:hover {
+    transform: translateY(-5px);
   }
   
-  .db-status {
-    font-size: 11px;
-    padding: 3px 8px;
-    border-radius: 20px;
-    color: white;
+  .product-card img {
+    width: 100%;
+    height: 200px;
+    object-fit: cover;
+    border-radius: 4px;
+  }
+  
+  .product-card h3 {
+    margin: 10px 0;
+    color: #333;
+  }
+  
+  .price {
+    font-size: 1.2em;
     font-weight: bold;
+    color: #2ecc71;
+    margin: 10px 0;
   }
   
-  .db-status.stored {
-    background-color: #4caf50;
+  .button-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
   }
   
-  .db-status.pending {
-    background-color: #ff9800;
+  .buy-now {
+    background-color: #2ecc71;
+    color: white;
   }
   
-  .db-status.local {
-    background-color: #9c27b0;
+  .buy-now:hover {
+    background-color: #27ae60;
   }
   
-  .db-status.demo {
-    background-color: #2196f3;
+  .add-to-cart {
+    background-color: #3498db;
+    color: white;
   }
   
-  .db-status.unknown {
-    background-color: #607d8b;
+  .add-to-cart:hover {
+    background-color: #2980b9;
   }
   
   .products-header {

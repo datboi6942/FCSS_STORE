@@ -100,7 +100,6 @@
 )}
   <slot />
 {/if}
-
 <style>
   .loading {
     display: flex;

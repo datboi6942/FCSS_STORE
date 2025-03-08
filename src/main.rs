@@ -371,6 +371,42 @@ async fn setup_database_directly(pool: &SqlitePool) -> Result<(), std::io::Error
     Ok(())
 }
 
+// Add this function to create a test admin user
+async fn create_test_admin(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    // Check if admin user already exists
+    let admin_exists = sqlx::query!(
+        "SELECT COUNT(*) as count FROM users WHERE username = ?",
+        "admin"
+    )
+    .fetch_one(pool)
+    .await?
+    .count > 0;
+
+    if !admin_exists {
+        log::info!("Creating test admin user...");
+        let admin_id = format!("usr-admin-{}", uuid::Uuid::new_v4().simple());
+        let now = chrono::Utc::now().timestamp();
+        
+        // In a real app, you would hash this password
+        sqlx::query!(
+            "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            admin_id,
+            "admin",
+            "admin123", // DEMO ONLY - use proper password hashing in production
+            "admin",
+            now
+        )
+        .execute(pool)
+        .await?;
+        
+        log::info!("Test admin user created successfully");
+    } else {
+        log::info!("Test admin user already exists");
+    }
+    
+    Ok(())
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();

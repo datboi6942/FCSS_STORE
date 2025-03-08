@@ -7,6 +7,10 @@
   
   let isDrawerOpen = false;
   
+  export let count = 0;
+  
+  $: itemCount = count || $cartItems.reduce((sum, item) => sum + item.quantity, 0);
+  
   function toggleDrawer() {
     isDrawerOpen = !isDrawerOpen;
   }
@@ -35,50 +39,13 @@
 </script>
 
 <div class="cart-icon">
-  <button on:click={toggleDrawer} class="cart-button">
-    🛒 Cart ({$cartItems.length})
-  </button>
-  
-  {#if isDrawerOpen}
-    <div class="cart-drawer" transition:slide>
-      <div class="cart-header">
-        <h3>Your Cart</h3>
-        <button on:click={toggleDrawer}>✕</button>
-      </div>
-      
-      {#if $cartItems.length === 0}
-        <p class="empty-cart">Your cart is empty</p>
-      {:else}
-        <div class="cart-items">
-          {#each $cartItems as item}
-            <div class="cart-item">
-              <img src={item.image || '/placeholder.png'} alt={item.name} />
-              <div class="item-details">
-                <h4 class="item-title">{item.name}</h4>
-                <p class="item-description">{item.description || ''}</p>
-                <p class="item-price">${item.price.toFixed(2)}</p>
-                <div class="quantity-controls">
-                  <button on:click={() => updateQuantity(item.id, item.quantity - 1)}>-</button>
-                  <span>{item.quantity}</span>
-                  <button on:click={() => updateQuantity(item.id, item.quantity + 1)}>+</button>
-                </div>
-              </div>
-              <button class="remove-button" on:click={() => removeFromCart(item.id)}>✕</button>
-            </div>
-          {/each}
-        </div>
-        
-        <div class="cart-footer">
-          <div class="cart-total">
-            <span>Total:</span>
-            <span>${$cartTotal.toFixed(2)}</span>
-          </div>
-          <button class="checkout-button" on:click={proceedToCheckout}>
-            Proceed to Checkout
-          </button>
-        </div>
-      {/if}
-    </div>
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="9" cy="21" r="1"></circle>
+    <circle cx="20" cy="21" r="1"></circle>
+    <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path>
+  </svg>
+  {#if itemCount > 0}
+    <span class="cart-count">{itemCount}</span>
   {/if}
 </div>
 
