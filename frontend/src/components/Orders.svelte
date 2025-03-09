@@ -8,34 +8,85 @@
   let lookupOrderId = '';
   let lookupOrder = null;
   let lookupError = null;
-  let loading = false;
+  let loading = true;
   let submitClicked = false;
   let testOrderId = null;
   let debugData = null;
   
   onMount(async () => {
+    console.log("Orders component mounted");
     if ($auth.isAuthenticated) {
+      console.log("User is authenticated, fetching orders");
       await fetchUserOrders();
+    } else {
+      console.log("User not authenticated, cannot fetch orders");
+      loading = false;
     }
   });
   
   async function fetchUserOrders() {
     try {
       loading = true;
+      
+      if (!$auth || !$auth.token) {
+        console.error("No authentication token available");
+        userOrders = [];
+        loading = false;
+        return;
+      }
+      
+      console.log("Fetching orders with token:", $auth.token.substring(0, 10) + "...");
+      console.log("User ID:", $auth.user ? $auth.user.id : "Unknown");
+      
+      // Call our debug token endpoint first to verify token
+      const tokenResponse = await fetch('http://localhost:5000/orders/debug-token', {
+        headers: {
+          'Authorization': `Bearer ${$auth.token}`
+        }
+      });
+      
+      const tokenData = await tokenResponse.json();
+      console.log("Token validation result:", tokenData);
+      
+      if (!tokenResponse.ok || !tokenData.success) {
+        console.error("Token validation failed:", tokenData.error);
+        throw new Error(`Invalid token: ${tokenData.error}`);
+      }
+      
+      // Now fetch orders since we know the token is valid
       const response = await fetch('http://localhost:5000/orders/my-orders', {
         headers: {
           'Authorization': `Bearer ${$auth.token}`
         }
       });
       
+      console.log("Orders response status:", response.status);
+      
       if (!response.ok) {
-        throw new Error('Failed to fetch your orders');
+        if (response.status === 404) {
+          console.log("No orders found (404)");
+          userOrders = [];
+          loading = false;
+          return;
+        }
+        throw new Error(`Failed to fetch your orders: ${response.status}`);
+      }
+      
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        console.error("Response is not JSON:", await response.text());
+        throw new Error("Invalid response format");
       }
       
       const data = await response.json();
-      userOrders = data.success ? data.orders : [];
+      console.log("Orders data:", data);
+      
+      userOrders = data.success && data.orders ? data.orders : [];
+      
+      console.log(`Fetched ${userOrders.length} orders for current user:`, userOrders);
     } catch (error) {
       console.error('Error fetching orders:', error);
+      userOrders = [];
     } finally {
       loading = false;
     }
@@ -283,14 +334,14 @@
   </div>
   
   {#if $auth.isAuthenticated}
-    <div class="user-orders-section">
+    <div class="your-orders-section">
       <h2>Your Orders</h2>
       
       {#if loading}
         <div class="loading">Loading your orders...</div>
       {:else if userOrders.length === 0}
         <div class="no-orders">
-          <p>You haven't placed any orders yet.</p>
+          <p>You don't have any orders yet.</p>
           <a href="/products" class="shop-now-btn">Shop Now</a>
         </div>
       {:else}
@@ -298,16 +349,19 @@
           {#each userOrders as order}
             <div class="order-card">
               <div class="order-header">
-                <h3>Order #{order.id}</h3>
-                <span class="order-date">{formatDate(order.created_at)}</span>
+                <span class="order-id">Order #{order.id}</span>
+                <span class="order-date">{new Date(order.created_at * 1000).toLocaleDateString()}</span>
               </div>
               
               <div class="order-info">
-                <div class="status-info">
-                  <span class="status-badge {getStatusClass(order.status)}">
-                    {order.status}
-                  </span>
-                  <span class="total-amount">${order.total_amount.toFixed(2)}</span>
+                <div class="order-status">
+                  <span class="status-label">Status:</span>
+                  <span class="status-badge status-{order.status.toLowerCase()}">{order.status}</span>
+                </div>
+                
+                <div class="order-total">
+                  <span class="total-label">Total:</span>
+                  <span class="total-value">${order.total_amount ? parseFloat(order.total_amount).toFixed(2) : '0.00'}</span>
                 </div>
                 
                 <button class="view-details-btn" on:click={() => navigate(`/order/${order.id}`)}>
@@ -318,6 +372,11 @@
           {/each}
         </div>
       {/if}
+    </div>
+  {:else}
+    <div class="not-logged-in">
+      <p>Please log in to view your orders.</p>
+      <a href="/login" class="login-link">Log In</a>
     </div>
   {/if}
 </div>

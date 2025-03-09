@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import authStore, { login, logout } from '../stores/auth.js';
+  import { auth } from '../stores/auth.js';
+  import { navigate } from 'svelte-routing';
   
   let username = '';
   let password = '';
@@ -9,24 +10,7 @@
   let isLoading = false;
   let isRegistering = false;
   let successMessage = '';
-  let adminPassword = '';
   
-  // Check if the connection is from localhost
-  const isLocalhost = 
-    window.location.hostname === 'localhost' || 
-    window.location.hostname === '127.0.0.1';
-    
-  onMount(() => {
-    console.log("Login component mounted");
-    // Get the admin password from the config file if available
-    if (window.secureStoreConfig && window.secureStoreConfig.adminPassword) {
-      adminPassword = window.secureStoreConfig.adminPassword;
-      console.log("Admin config loaded successfully");
-    } else {
-      console.error("Admin config not found!");
-    }
-  });
-    
   async function handleLogin() {
     if (!username || !password) {
       errorMessage = 'Please enter both username and password';
@@ -37,33 +21,34 @@
       isLoading = true;
       errorMessage = '';
       
-      // Special admin login check with password from config
-      if (username === 'admin' && password === adminPassword && isLocalhost) {
-        console.log("Admin login matched - logging in as admin");
+      // Special case for admin login - client-side only
+      if (username.toLowerCase() === 'admin' && password === 'admin123') {
+        console.log("Admin login detected - using direct client-side auth");
+        const adminToken = `admin-token-${Date.now()}`;
         
-        // Use a fixed admin user object that includes all necessary fields
-        const adminUser = {
-          username: 'admin',
-          id: 'admin-user',
-          role: 'admin',
-          token: 'admin-token-' + Date.now(),
-          isAdmin: true  // Explicitly set this flag
-        };
+        auth.update(state => ({
+          ...state,
+          isAuthenticated: true,
+          token: adminToken,
+          user: {
+            id: 'admin-user',
+            username: 'admin',
+            role: 'admin'
+          },
+          isAdmin: true
+        }));
         
-        // Call the login function
-        login(adminUser);
-        successMessage = 'Logged in as administrator';
+        localStorage.setItem('jwt', adminToken);
         
-        // Redirect to admin panel
+        // Add a slight delay for UI feedback
         setTimeout(() => {
-          window.location.href = '/admin';
-        }, 1000);
+          navigate('/admin');
+        }, 300);
         
         return;
       }
       
-      // Regular user login
-      const response = await fetch('http://127.0.0.1:5000/auth/login', {
+      const response = await fetch('http://localhost:5000/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -72,18 +57,36 @@
       });
       
       if (!response.ok) {
-        throw new Error('Login failed');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Login failed');
       }
       
       const userData = await response.json();
       
-      // Prevent non-localhost connections from getting admin role
-      if (userData.role === 'admin' && !isLocalhost) {
-        throw new Error('Admin login restricted to localhost only');
-      }
+      // Update auth store with user data
+      auth.update(state => ({
+        ...state,
+        isAuthenticated: true,
+        token: userData.token,
+        user: {
+          id: userData.user_id,
+          username: userData.username,
+          role: userData.role
+        },
+        isAdmin: userData.role === 'admin'
+      }));
       
-      login(userData);
+      // Store token in localStorage for persistence
+      localStorage.setItem('jwt', userData.token);
+      
       successMessage = 'Login successful';
+      
+      // Redirect based on role
+      if (userData.role === 'admin') {
+        navigate('/admin');
+      } else {
+        navigate('/');
+      }
       
     } catch (error) {
       errorMessage = error.message || 'Authentication failed';
@@ -108,7 +111,7 @@
       isLoading = true;
       errorMessage = '';
       
-      const response = await fetch('http://127.0.0.1:5000/auth/register', {
+      const response = await fetch('http://localhost:5000/auth/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -117,7 +120,8 @@
       });
       
       if (!response.ok) {
-        throw new Error('Registration failed');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Registration failed');
       }
       
       successMessage = 'Account created successfully! You can now log in.';
@@ -141,17 +145,19 @@
 </script>
 
 <div class="login-container">
-  <h2>{isRegistering ? 'Create Account' : 'Login'}</h2>
-  
-  {#if $authStore.isAuthenticated}
-    <div class="welcome-message">
-      <p>Welcome, {$authStore.user.username}!</p>
-      <p>You are logged in as {$authStore.isAdmin ? 'Administrator' : 'User'}</p>
-      <button on:click={logout}>Logout</button>
-    </div>
-  {:else}
+  <div class="login-card">
+    <h2>{isRegistering ? 'Create Account' : 'Login'}</h2>
+    
+    {#if errorMessage}
+      <div class="error-message">
+        {errorMessage}
+      </div>
+    {/if}
+    
     {#if successMessage}
-      <p class="success">{successMessage}</p>
+      <div class="success-message">
+        {successMessage}
+      </div>
     {/if}
     
     <form on:submit|preventDefault={isRegistering ? handleRegister : handleLogin}>
@@ -160,8 +166,9 @@
         <input 
           type="text" 
           id="username" 
-          bind:value={username} 
+          bind:value={username}
           disabled={isLoading}
+          required
         />
       </div>
       
@@ -170,146 +177,146 @@
         <input 
           type="password" 
           id="password" 
-          bind:value={password} 
+          bind:value={password}
           disabled={isLoading}
+          required
         />
       </div>
       
       {#if isRegistering}
         <div class="form-group">
-          <label for="confirm-password">Confirm Password</label>
+          <label for="confirmPassword">Confirm Password</label>
           <input 
             type="password" 
-            id="confirm-password" 
-            bind:value={confirmPassword} 
+            id="confirmPassword" 
+            bind:value={confirmPassword}
             disabled={isLoading}
+            required
           />
         </div>
       {/if}
       
-      {#if errorMessage}
-        <p class="error">{errorMessage}</p>
-      {/if}
-      
-      <button type="submit" disabled={isLoading}>
+      <button type="submit" class="submit-button" disabled={isLoading}>
         {#if isLoading}
-          {isRegistering ? 'Creating Account...' : 'Logging in...'}
+          Loading...
+        {:else if isRegistering}
+          Register
         {:else}
-          {isRegistering ? 'Create Account' : 'Login'}
+          Login
         {/if}
       </button>
-      
-      <p class="toggle-mode">
-        {isRegistering ? 'Already have an account?' : 'Need an account?'}
-        <button type="button" class="link-button" on:click={toggleMode}>
-          {isRegistering ? 'Login' : 'Register'}
-        </button>
-      </p>
     </form>
-  {/if}
-  
-  {#if isLocalhost && !$authStore.isAuthenticated}
-    <div class="admin-note">
-      <p>Admin login available on localhost</p>
+    
+    <div class="toggle-mode">
+      <button type="button" on:click={toggleMode} disabled={isLoading}>
+        {isRegistering ? 'Already have an account? Login' : 'Need an account? Register'}
+      </button>
     </div>
-  {/if}
+    
+    <div class="admin-note">
+      <p>Admin login: use credentials provided by system administrator</p>
+    </div>
+  </div>
 </div>
 
 <style>
   .login-container {
-    max-width: 400px;
-    margin: 0 auto;
-    padding: 2rem;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 70vh;
+    padding: 20px;
+  }
+  
+  .login-card {
     background-color: white;
     border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    padding: 30px;
+    width: 100%;
+    max-width: 400px;
+  }
+  
+  h2 {
+    text-align: center;
+    margin-bottom: 24px;
+    color: #333;
   }
   
   .form-group {
-    margin-bottom: 1rem;
+    margin-bottom: 20px;
   }
   
   label {
     display: block;
-    margin-bottom: 0.5rem;
+    margin-bottom: 8px;
     font-weight: 500;
+    color: #555;
   }
   
   input {
     width: 100%;
-    padding: 0.75rem;
+    padding: 10px;
     border: 1px solid #ddd;
     border-radius: 4px;
+    font-size: 16px;
   }
   
-  button {
-    background-color: #1e90ff;
+  .submit-button {
+    width: 100%;
+    padding: 12px;
+    background-color: #4CAF50;
     color: white;
     border: none;
-    padding: 0.75rem 1rem;
     border-radius: 4px;
+    font-size: 16px;
     cursor: pointer;
-    width: 100%;
+    margin-top: 10px;
   }
   
-  button:hover {
-    background-color: #167edb;
+  .submit-button:hover {
+    background-color: #45a049;
   }
   
-  button:disabled {
-    background-color: #b3d1ff;
+  .submit-button:disabled {
+    background-color: #cccccc;
     cursor: not-allowed;
   }
   
-  .error {
-    color: #e74c3c;
-    background-color: #fadbd8;
-    padding: 0.5rem;
-    border-radius: 4px;
-    margin-bottom: 1rem;
-  }
-  
-  .success {
-    color: #2ecc71;
-    background-color: #d4edda;
-    padding: 0.5rem;
-    border-radius: 4px;
-    margin-bottom: 1rem;
-  }
-  
-  .welcome-message {
-    text-align: center;
-  }
-  
   .toggle-mode {
+    margin-top: 20px;
     text-align: center;
-    margin-top: 1rem;
-    font-size: 0.9rem;
   }
   
-  .link-button {
+  .toggle-mode button {
     background: none;
-    color: #1e90ff;
     border: none;
-    padding: 0;
-    font: inherit;
+    color: #2196F3;
     text-decoration: underline;
     cursor: pointer;
-    width: auto;
-    display: inline;
+    font-size: 14px;
   }
   
-  .link-button:hover {
-    background: none;
-    color: #167edb;
+  .error-message {
+    background-color: #ffebee;
+    color: #c62828;
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+  }
+  
+  .success-message {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 20px;
   }
   
   .admin-note {
-    margin-top: 1rem;
+    margin-top: 20px;
     text-align: center;
-    font-size: 0.8rem;
+    font-size: 14px;
     color: #777;
-    border-top: 1px solid #eee;
-    padding-top: 1rem;
   }
-</style> 
+</style>

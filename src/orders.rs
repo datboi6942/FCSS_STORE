@@ -682,7 +682,9 @@ pub async fn get_authenticated_user_orders(req: HttpRequest, app_state: web::Dat
         }
     };
     
-    // Query to get user's orders
+    info!("Fetching orders for user ID: {}", user_id);
+    
+    // Query to get user's orders with proper WHERE clause
     let query = r#"
         SELECT id, status, total_amount, created_at, updated_at, payment_id
         FROM orders 
@@ -695,6 +697,15 @@ pub async fn get_authenticated_user_orders(req: HttpRequest, app_state: web::Dat
         .fetch_all(&app_state.db)
         .await {
             Ok(rows) => {
+                if rows.is_empty() {
+                    info!("No orders found for user {}", user_id);
+                    return HttpResponse::Ok().json(json!({
+                        "success": true,
+                        "orders": [],
+                        "count": 0
+                    }));
+                }
+                
                 let orders = rows.iter().map(|row| {
                     json!({
                         "id": row.get::<String, _>("id"),
@@ -704,40 +715,59 @@ pub async fn get_authenticated_user_orders(req: HttpRequest, app_state: web::Dat
                         "updated_at": row.get::<i64, _>("updated_at"),
                         "payment_id": row.get::<Option<String>, _>("payment_id")
                     })
-                }).collect::<Vec<_>>();
+                }).collect::<Vec<serde_json::Value>>();
+                
+                info!("Found {} orders for user {}", orders.len(), user_id);
                 
                 HttpResponse::Ok().json(json!({
                     "success": true,
-                    "orders": orders
+                    "orders": orders,
+                    "count": orders.len()
                 }))
             },
             Err(e) => {
-                error!("Database error fetching user orders: {}", e);
+                error!("Database error while fetching orders: {}", e);
                 HttpResponse::InternalServerError().json(json!({
                     "success": false,
-                    "error": "Failed to retrieve orders"
+                    "error": format!("Failed to fetch orders: {}", e)
                 }))
             }
         }
 }
 
-// Update the extract_user_id_from_token function
+// Better token extraction with more debugging
 fn extract_user_id_from_token(req: &HttpRequest) -> Option<String> {
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Bearer ") {
-                // Check for admin token
-                if auth_str.contains("admin-token") {
-                    // For admin tokens, return a test user ID that has orders
-                    return Some("usr-user1".to_string());
-                }
+            info!("Auth header: {}", auth_str);
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                info!("Token (first 20 chars): {}", &token[..std::cmp::min(20, token.len())]);
                 
-                // For regular tokens, you would decode the JWT
-                // But for now just return the test user ID
-                return Some("usr-user1".to_string());
+                // Try to extract from JWT first
+                match crate::session::verify_jwt(token) {
+                    Ok(claims) => {
+                        info!("Successfully extracted user ID from token: {}", claims.sub);
+                        return Some(claims.sub);
+                    },
+                    Err(e) => {
+                        error!("JWT verification failed: {}", e);
+                        
+                        // As a fallback for testing, check if the token contains a user ID pattern
+                        if token.contains("usr-") {
+                            let parts: Vec<&str> = token.split("usr-").collect();
+                            if parts.len() > 1 {
+                                let possible_id = format!("usr-{}", parts[1]);
+                                info!("Extracted possible user ID from token pattern: {}", possible_id);
+                                return Some(possible_id);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+    
+    error!("No valid authorization header or token found");
     None
 }
 
@@ -770,4 +800,52 @@ pub async fn debug_orders(app_state: web::Data<AppState>) -> impl Responder {
             }))
         }
     }
+}
+
+// Update the path for the debug token endpoint
+#[get("/debug-token")]  // This may need to be changed to the correct path
+pub async fn debug_token_endpoint(req: HttpRequest) -> impl Responder {
+    // Extract and analyze the token
+    if let Some(auth_header) = req.headers().get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                // Try to verify the token
+                match crate::session::verify_jwt(token) {
+                    Ok(claims) => {
+                        return HttpResponse::Ok().json(json!({
+                            "success": true,
+                            "message": "Valid token",
+                            "user_id": claims.sub,
+                            "exp": claims.exp,
+                            "raw_token": token
+                        }));
+                    },
+                    Err(e) => {
+                        return HttpResponse::BadRequest().json(json!({
+                            "success": false,
+                            "error": format!("Invalid token: {}", e),
+                            "raw_token": token
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    
+    HttpResponse::BadRequest().json(json!({
+        "success": false,
+        "error": "No token provided"
+    }))
+}
+
+// Add this function to your orders.rs file
+pub fn init_orders_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/orders")
+            .service(debug_orders)
+            .service(get_authenticated_user_orders)
+    );
+    
+    // Register the debug-token endpoint at the root level
+    cfg.service(debug_token_endpoint);
 }

@@ -1,7 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { cartItems, cartTotal, cart } from '../stores/cart.js';
+  import { cart, cartCount, cartTotal } from '../stores/cart.js';
   
   const dispatch = createEventDispatcher();
   
@@ -9,27 +9,23 @@
   
   export let count = 0;
   
-  $: itemCount = count || $cartItems.reduce((sum, item) => sum + item.quantity, 0);
+  $: itemCount = count || $cartCount;
   
   function toggleDrawer() {
     isDrawerOpen = !isDrawerOpen;
   }
   
   function removeFromCart(itemId) {
-    cartItems.update(items => items.filter(item => item.id !== itemId));
+    cart.removeItem(itemId);
   }
   
   function updateQuantity(itemId, newQuantity) {
     if (newQuantity < 1) return;
-    cartItems.update(items =>
-      items.map(item =>
-        item.id === itemId ? { ...item, quantity: newQuantity } : item
-      )
-    );
+    cart.updateQuantity(itemId, newQuantity);
   }
   
   function proceedToCheckout() {
-    if ($cartItems.length === 0) {
+    if ($cart.length === 0) {
       alert('Your cart is empty!');
       return;
     }

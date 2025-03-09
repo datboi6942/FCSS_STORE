@@ -1,8 +1,8 @@
 <script lang="ts">
   import { Link } from "svelte-routing";
   import CartIcon from "./CartIcon.svelte";
-  import { auth } from '../stores/auth.js';
-  import { cartItems } from '../stores/cart.js';
+  import auth from '../stores/auth.js';
+  import { cart, cartCount } from '../stores/cart.js';
 
   export let setView: (view: string) => void;
   export let onToggleCart = () => {};
@@ -27,7 +27,7 @@
   }
 
   // Calculate total items in cart
-  $: cartItemCount = $cartItems.reduce((sum, item) => sum + item.quantity, 0);
+  $: cartItemCount = $cartCount;
 
   // Debug log to check auth state
   $: console.log('Auth state:', $auth);

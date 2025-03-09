@@ -24,7 +24,7 @@
   }
   
   function checkout() {
-    if ($cart.items.length === 0) return;
+    if ($cart.length === 0) return;
     
     // Generate an order ID and proceed to Monero checkout
     orderId = 'order-' + Date.now();

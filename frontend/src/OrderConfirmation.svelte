@@ -9,4 +9,8 @@
     </div>
     
     <!-- Rest of your order confirmation content -->
-</div> 
+</div>
+
+<script>
+  import { cart, cartTotal } from './stores/cart.js';
+</script> 

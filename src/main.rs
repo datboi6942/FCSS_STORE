@@ -35,6 +35,7 @@ use crate::monero::MoneroPaymentStore;
 use actix_files;
 mod payment_websocket;
 use payment_websocket::{WebsocketConnections, payment_ws};
+mod users;
 
 // Remove the derive and implement Clone manually
 pub struct AppState {
@@ -150,6 +151,7 @@ async fn setup_database_directly(pool: &SqlitePool) -> Result<(), std::io::Error
     // Drop tables in reverse dependency order
     let tables = [
         "order_items",     // Drop child tables first
+        "addresses",       // Add this line
         "orders",
         "monero_payments",
         "products",
@@ -250,7 +252,29 @@ async fn setup_database_directly(pool: &SqlitePool) -> Result<(), std::io::Error
             created_at INTEGER NOT NULL,
             FOREIGN KEY (order_id) REFERENCES orders(id)
         )
-        "#
+        "#,
+        
+        // Add addresses table
+        r#"
+        CREATE TABLE addresses (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            address TEXT NOT NULL,
+            city TEXT NOT NULL,
+            state TEXT NOT NULL,
+            zip TEXT NOT NULL,
+            country TEXT NOT NULL,
+            is_default BOOLEAN NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        "#,
+        
+        // Create index for addresses table
+        r#"
+        CREATE INDEX idx_addresses_user_id ON addresses(user_id)
+        "#,
     ];
     
     // Create tables in dependency order
@@ -493,7 +517,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .wrap(cors)
             .app_data(app_state.clone())
-            .configure(orders::init_routes)
+            .configure(orders::init_orders_routes)
             .service(direct_checkout)
             .service(cart::checkout)
             .route("/", web::get().to(index))
@@ -540,6 +564,8 @@ async fn main() -> std::io::Result<()> {
             .service(actix_files::Files::new("/", "./frontend/public").index_file("index.html"))
             // Handle all other routes by returning index.html (for client-side routing)
             .default_service(web::get().to(index))
+            // Users routes
+            .configure(users::init_routes)
     })
     .bind("0.0.0.0:5000")?
     .run()

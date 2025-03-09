@@ -136,14 +136,39 @@
     }
   }
   
-  function handleAddToCart() {
-    cart.addItem(product);
+  function addToCart() {
+    console.log("Adding to cart:", product); // Debug log
+    adding = true;
     
-    // Show notification
-    showAddedNotification = true;
-    setTimeout(() => {
-      showAddedNotification = false;
-    }, 2000);
+    try {
+      // Create a cart item from the product
+      const cartItem = {
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        quantity: 1,
+        image: product.image || 'https://via.placeholder.com/150'
+      };
+      
+      // Use the cart store's addItem method
+      cart.addItem(cartItem);
+      
+      // Show success notification
+      addSuccess = true;
+      showAddedNotification = true;
+      
+      // Log success
+      console.log("Successfully added to cart:", cartItem);
+      
+      setTimeout(() => {
+        showAddedNotification = false;
+      }, 2000);
+    } catch (err) {
+      console.error("Error adding to cart:", err);
+      error = err.message || "Failed to add to cart";
+    } finally {
+      adding = false;
+    }
   }
 </script>
 
@@ -175,7 +200,7 @@
     {#if product.available}
       <button 
         class="add-to-cart-btn" 
-        on:click={handleAddToCart} 
+        on:click={addToCart} 
         disabled={adding}
       >
         {#if adding}

@@ -2,12 +2,14 @@
   import { onMount } from 'svelte';
   import { auth } from '../stores/auth.js';
   import { navigate } from 'svelte-routing';
+  import { cart, cartTotal } from '../stores/cart.js';
   import { writable } from 'svelte/store';
 
   // Update API base URL
   const API_BASE_URL = 'http://localhost:5000';
 
-  let cart = null;
+  // Rename this variable to avoid conflict with imported cart
+  let cartData = null;
   let loading = true;
   let error = null;
   let loadingTimeout = null;
@@ -55,7 +57,7 @@
         
         // If we're in offline mode, immediately set the cart
         if (offlineMode) {
-          cart = demoCart;
+          cartData = demoCart;
           loading = false;
         }
       } catch (err) {
@@ -70,7 +72,7 @@
         error = "Loading cart timed out. Using offline mode.";
         console.error("Cart loading timed out");
         offlineMode = true;
-        cart = demoCart;
+        cartData = demoCart;
       }
     }, 5000);
     
@@ -96,7 +98,7 @@
       // For admin users, create a dummy cart if one doesn't exist
       if ($auth.isAdmin) {
         console.log("Admin user detected, creating admin cart");
-        cart = demoCart;
+        cartData = demoCart;
         offlineMode = true;
         loading = false;
         return;
@@ -121,7 +123,7 @@
           // If cart doesn't exist for user, create an empty one
           if (response.status === 404) {
             console.log("Cart not found, creating empty cart");
-            cart = {
+            cartData = {
               id: "new-cart-" + Date.now(),
               user_id: userId,
               items: [],
@@ -135,13 +137,13 @@
         
         const data = await response.json();
         console.log("Cart data loaded:", data);
-        cart = data;
+        cartData = data;
         
       } catch (err) {
         if (err.name === 'AbortError') {
           console.log("Cart request timed out, using offline mode");
           offlineMode = true;
-          cart = demoCart;
+          cartData = demoCart;
         } else {
           throw err;
         }
@@ -151,28 +153,28 @@
       console.error('Error loading cart:', err);
       error = "Could not connect to server. Using offline mode.";
       offlineMode = true;
-      cart = demoCart;
+      cartData = demoCart;
     } finally {
       loading = false;
     }
   }
 
   function calculateTotal() {
-    if (!cart || !cart.items || !cart.items.length) return 0;
-    return cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    if (!cartData || !cartData.items || !cartData.items.length) return 0;
+    return cartData.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   }
   
   async function removeItem(cartId, index) {
     if (offlineMode) {
       // In offline mode, just remove from local cart
       demoCart.items.splice(index, 1);
-      cart = {...demoCart};
+      cartData = {...demoCart};
       localStorage.setItem('demoCart', JSON.stringify(demoCart));
       return;
     }
     
     try {
-      const item = cart.items[index];
+      const item = cartData.items[index];
       const response = await fetch(`${API_BASE_URL}/cart/remove`, {
         method: 'POST',
         headers: {
@@ -190,8 +192,8 @@
       }
       
       // Update local cart immediately for better UX
-      cart.items.splice(index, 1);
-      cart = {...cart};
+      cartData.items.splice(index, 1);
+      cartData = {...cartData};
       
     } catch (err) {
       console.error('Error removing item:', err);
@@ -200,7 +202,7 @@
   }
   
   function startCheckout() {
-    if (!cart || !cart.items || cart.items.length === 0) {
+    if (!cartData || !cartData.items || cartData.items.length === 0) {
       alert('Your cart is empty!');
       return;
     }
@@ -246,7 +248,7 @@
       
       // Prepare checkout data
       const checkoutData = {
-        items: cart.items,
+        items: cartData.items,
         shipping_info: shippingInfo, // Use the filled in shipping info
         user_id: userId,
         total: totalAmount
@@ -355,9 +357,9 @@
     }
     
     // Update cart and localStorage
-    cart = {...demoCart};
+    cartData = {...demoCart};
     localStorage.setItem('demoCart', JSON.stringify(demoCart));
-    console.log("Updated cart after demo add:", cart);
+    console.log("Updated cart after demo add:", cartData);
   };
   
   // Set up the event listener properly
@@ -385,7 +387,7 @@
   // Update the showShippingForm function
   function showShippingForm() {
     console.log("Show shipping form called");
-    if (!cart || !cart.items || cart.items.length === 0) {
+    if (!cartData || !cartData.items || cartData.items.length === 0) {
       alert('Your cart is empty!');
       return;
     }
@@ -395,7 +397,7 @@
     checkoutStageStore.set('shipping');
     
     // Force a UI update
-    cart = {...cart};
+    cartData = {...cartData};
     
     // Better debug output
     console.log("CHECKOUT STAGE CHANGED TO:", checkoutStage);
@@ -440,7 +442,7 @@
       <p>Offline Mode: {offlineMode ? 'Yes' : 'No'}</p>
       <p>Authentication: {$auth.isAuthenticated ? 'Yes' : 'No'}</p>
       <p>User ID: {$auth.user ? $auth.user.id : 'Not logged in'}</p>
-      <p>Cart Items: {cart && cart.items ? cart.items.length : '0'}</p>
+      <p>Cart Items: {$cart ? $cart.length : '0'}</p>
     </div>
   {/if}
   
@@ -454,7 +456,7 @@
     <div class="loading">
       Loading your cart...
     </div>
-  {:else if error && !cart}
+  {:else if error && !$cart.length}
     <div class="error">
       <p>Error: {error}</p>
       <button on:click={loadCart}>Try Again</button>
@@ -464,7 +466,7 @@
       <p>Please log in to view your cart.</p>
       <a href="/login" class="login-link">Log In</a>
     </div>
-  {:else if cart && cart.items && cart.items.length > 0}
+  {:else if $cart && $cart.length > 0}
     <div class="cart-items">
       <table>
         <thead>
@@ -477,14 +479,14 @@
           </tr>
         </thead>
         <tbody>
-          {#each cart.items as item, index (item.product_id || index)}
+          {#each $cart as item, index (item.id || index)}
             <tr>
               <td>{item.name}</td>
               <td>${parseFloat(item.price).toFixed(2)}</td>
               <td>{item.quantity}</td>
               <td>${(item.price * item.quantity).toFixed(2)}</td>
               <td>
-                <button class="btn-remove" on:click={() => removeItem(cart.id, index)}>
+                <button class="btn-remove" on:click={() => removeItem(item.id)}>
                   Remove
                 </button>
               </td>

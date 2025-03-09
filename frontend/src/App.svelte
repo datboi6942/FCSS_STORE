@@ -9,7 +9,7 @@
   import { Router, Route } from "svelte-routing";
   import { onMount } from 'svelte';
   import { auth } from './stores/auth.js';
-  import { cartItems, cartTotal, cart } from './stores/cart.js';
+  import { cart, cartTotal } from './stores/cart.js';
   
   // Import missing components
   import Nav from './components/Nav.svelte';
@@ -82,17 +82,79 @@
   }
   
   onMount(async () => {
+    console.log("App component mounted, checking authentication...");
+    
+    // Check server first to ensure it's up
     await checkServerReadiness();
-    // Add event listener for Buy Now button
-    document.addEventListener('showShipping', () => {
+    
+    // Then check authentication status
+    const isAuthenticated = await auth.checkAuth();
+    console.log("Authentication check result:", isAuthenticated);
+    
+    // Add event listener for showShipping
+    const handleShowShipping = () => {
+      console.log("showShipping event received in App.svelte");
       showShippingForm = true;
-    });
+    };
+    
+    document.addEventListener('showShipping', handleShowShipping);
     
     // Cleanup
     return () => {
-      document.removeEventListener('showShipping', () => {
-        showShippingForm = true;
-      });
+      document.removeEventListener('showShipping', handleShowShipping);
+    };
+    
+    // Check if we need to restore auth from backup token
+    const tokenBackup = localStorage.getItem('auth_token_backup');
+    if (tokenBackup && (!$auth || !$auth.token !== tokenBackup)) {
+      console.log("Restoring authentication from backup token in App");
+      auth.update(state => ({
+        ...state,
+        isAuthenticated: true,
+        token: tokenBackup
+      }));
+      
+      // Check auth state with backend
+      try {
+        const response = await fetch('http://localhost:5000/auth/profile', {
+          headers: {
+            'Authorization': `Bearer ${tokenBackup}`
+          }
+        });
+        
+        if (response.ok) {
+          const userData = await response.json();
+          // Update auth with user data
+          auth.update(state => ({
+            ...state,
+            user: userData,
+            isAdmin: userData.role === 'admin'
+          }));
+          console.log("Successfully restored user profile from token");
+        } else {
+          // Token is invalid, clear it
+          localStorage.removeItem('auth_token_backup');
+        }
+      } catch (e) {
+        console.error("Error restoring auth from token:", e);
+      }
+    }
+
+    // Add event handler for page unloads to save auth state
+    const handleBeforeUnload = () => {
+      if ($auth && $auth.isAuthenticated && $auth.token) {
+        localStorage.setItem('auth_token_backup', $auth.token);
+        if ($auth.user) {
+          localStorage.setItem('auth_user_backup', JSON.stringify($auth.user));
+        }
+      }
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      // Other cleanup...
     };
   });
   
@@ -105,23 +167,47 @@
 
   // Check if user is authenticated on page load
   onMount(() => {
-    const token = localStorage.getItem('jwt');
+    // Check for both regular JWT and backup token
+    const token = localStorage.getItem('jwt') || localStorage.getItem('auth_token_backup');
     if (token) {
+      console.log("Restoring authentication from token:", token.substring(0, 10) + "...");
+      
+      // Set auth state immediately with the token
+      auth.update(state => ({
+        ...state,
+        isAuthenticated: true,
+        token: token
+      }));
+      
       // Verify token with backend
-      fetch('http://localhost:8443/auth/profile', {
+      fetch('http://localhost:5000/auth/profile', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       }).then(response => {
         if (response.ok) {
-          auth.login(token);
+          return response.json();
         } else {
-          // Token invalid
-          auth.logout();
+          throw new Error('Invalid token');
+        }
+      }).then(data => {
+        console.log("User profile loaded successfully:", data.username);
+        auth.update(state => ({
+          ...state,
+          user: data,
+          isAdmin: data.role === 'admin'
+        }));
+        
+        // If this was from a backup token, promote it to be the main JWT
+        if (localStorage.getItem('auth_token_backup') === token) {
+          localStorage.setItem('jwt', token);
         }
       }).catch(error => {
         console.error('Auth check failed', error);
-        auth.logout();
+        // Only clear if it's not the backup token during checkout
+        if (!window.location.pathname.includes('/checkout/')) {
+          auth.logout();
+        }
       });
     }
   });
@@ -144,7 +230,7 @@
     const checkoutData = {
       ...event.detail,
       user_id: getCurrentUserId() || 'guest',
-      items: $cartItems,
+      items: $cart,
     };
     
     console.log('Submitting checkout data:', checkoutData);
@@ -172,7 +258,7 @@
       console.log('Checkout response:', data);
       
       if (data.success) {
-        cartItems.set([]);
+        cart.clear();
         showShippingForm = false;
         window.location.href = `/monero/checkout/${data.order_id}`;
       } else {
@@ -197,8 +283,8 @@
 <Router>
   <NavBar 
     {setView} 
-    onToggleCart={handleToggleCart}
-    onShowShipping={handleShowShipping}
+    onToggleCart={() => isCartOpen = !isCartOpen}
+    onShowShipping={showShippingForm}
   />
   
   <CartDrawer isOpen={isCartOpen} />
@@ -258,6 +344,9 @@
         <AdminUsers />
       </ProtectedRoute>
     </Route>
+    <Route path="/checkout/monero">
+      <MoneroCheckout />
+    </Route>
     <Route path="*" let:location>
       <div style="padding: 20px; border: 2px solid red;">
         <h3>Debug: Route Not Found</h3>
@@ -280,12 +369,6 @@
 </Router>
 
 <style>
-  main {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 1rem;
-  }
-  
   footer {
     text-align: center;
     padding: 1rem;
@@ -327,21 +410,6 @@
     margin-top: 1rem;
     color: #2196F3;
     text-decoration: none;
-  }
-
-  /* Add styling for the order ID section */
-  .order-id-section {
-    margin-top: 20px;
-    padding: 15px;
-    background-color: #f8f9fa;
-    border-radius: 5px;
-    border-left: 4px solid #28a745;
-  }
-  
-  .order-id-note {
-    font-size: 0.85em;
-    color: #6c757d;
-    margin-top: 5px;
   }
 </style>
 

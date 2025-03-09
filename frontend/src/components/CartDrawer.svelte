@@ -2,6 +2,7 @@
   import { cart, cartTotal } from '../stores/cart.js';
   import { fly } from 'svelte/transition';
   import { createEventDispatcher, onMount } from 'svelte';
+  import { auth } from '../stores/auth.js';
   
   const dispatch = createEventDispatcher();
   export let isOpen = false;
@@ -35,18 +36,43 @@
   
   async function checkout() {
     try {
+      console.log("Starting checkout process with cart items:", $cart);
+      
+      if (!$auth || !$auth.isAuthenticated) {
+        console.warn("User not authenticated, directing to login");
+        close();
+        // Save current page for redirect back after login
+        localStorage.setItem('redirectAfterLogin', '/checkout');
+        window.location.href = '/login';
+        return;
+      }
+      
       const checkoutData = {
-        items: $cart || [],
-        total: $cartTotal || 0
+        items: $cart,
+        total: $cartTotal
       };
+      
+      console.log("Sending checkout data:", checkoutData);
+      
+      // Include auth token
+      const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      };
+      
+      if ($auth && $auth.token) {
+        headers['Authorization'] = `Bearer ${$auth.token}`;
+        // Save the token for the checkout page
+        localStorage.setItem('auth_token_backup', $auth.token);
+        // Also save user data
+        if ($auth.user) {
+          localStorage.setItem('auth_user_backup', JSON.stringify($auth.user));
+        }
+      }
       
       const response = await fetch('http://localhost:5000/api/direct-checkout', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        credentials: 'include',
+        headers,
         body: JSON.stringify(checkoutData)
       });
       
@@ -55,11 +81,20 @@
       }
       
       const data = await response.json();
+      console.log("Checkout response:", data);
       
       if (data.success && data.payment) {
+        // Store the payment data
         localStorage.setItem('monero_payment', JSON.stringify(data.payment));
-        close(); // Close the cart drawer before navigation
-        window.location.href = '/checkout/monero';
+        localStorage.setItem('current_order_id', data.order_id);
+        
+        // Close the cart drawer
+        close();
+        
+        // Use single-page app navigation instead of full page reload
+        if (typeof window !== 'undefined' && window.location) {
+          window.location.href = '/checkout/monero';
+        }
       } else {
         throw new Error(data.message || 'Checkout failed');
       }

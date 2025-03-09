@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, Responder, post};
+use actix_web::{web, HttpResponse, Responder, post, HttpRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -6,6 +6,8 @@ use uuid::Uuid;
 use log::{info, error};
 use crate::AppState;
 use crate::monero::MoneroPaymentRequest;
+use chrono::{Utc};
+use crate::auth;
 
 // Define our data structures
 pub type CartStore = Mutex<HashMap<String, Cart>>;
@@ -236,6 +238,89 @@ pub async fn checkout(
     
     // Add debug logging
     println!("Created Monero payment: {:?}", payment);
+    
+    // Return the checkout response with payment details
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(CheckoutResponse {
+            success: true,
+            order_id,
+            payment: Some(payment),
+            message: Some("Please send Monero to the provided address".to_string()),
+        })
+}
+
+// Direct checkout endpoint
+#[post("/api/direct-checkout")]
+pub async fn direct_checkout(
+    app_state: web::Data<AppState>,
+    checkout_data: web::Json<CheckoutRequest>,
+    req: HttpRequest,
+) -> impl Responder {
+    println!("Received direct checkout request: {:?}", checkout_data);
+    
+    // Extract user ID from the authentication token
+    let user_id = match auth::validate_token(req.clone()) {
+        Ok(claims) => {
+            println!("User authenticated, ID: {}", claims.sub);
+            claims.sub
+        },
+        Err(e) => {
+            println!("Auth error: {}. Using guest ID", e);
+            "guest".to_string()
+        }
+    };
+    
+    // Create a unique order ID
+    let order_id = Uuid::new_v4().to_string();
+    
+    // Create Monero payment request
+    let total_amount = checkout_data.total;
+    println!("Creating payment for total amount: {} for user {}", total_amount, user_id);
+    
+    let payment = app_state.monero_payments.create_payment_sync(order_id.clone(), total_amount);
+    println!("Created Monero payment: {:?}", payment);
+    
+    // Store the order in the database with the user_id
+    let now = Utc::now().timestamp();
+    
+    // Create the order record with proper debugging
+    println!("Inserting order into database: id={}, user_id={}", order_id, user_id);
+    match sqlx::query(
+        "INSERT INTO orders (id, user_id, payment_id, status, shipping_name, shipping_address, 
+         shipping_city, shipping_state, shipping_zip, shipping_country, shipping_email, 
+         total_amount, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&order_id)
+    .bind(&user_id)  // Make sure user_id is passed correctly
+    .bind(&payment.payment_id)
+    .bind("Pending")
+    .bind("Customer")  // Default shipping info
+    .bind("Address")
+    .bind("City")
+    .bind("State")
+    .bind("Zip")
+    .bind("Country")
+    .bind("customer@example.com")
+    .bind(total_amount)
+    .bind(now)
+    .bind(now)
+    .execute(&app_state.db)
+    .await {
+        Ok(_) => {
+            println!("✅ Successfully created order {} for user {}", order_id, user_id);
+        },
+        Err(e) => {
+            println!("❌ Error creating order: {}", e);
+            return HttpResponse::InternalServerError().json(CheckoutResponse {
+                success: false,
+                order_id: "".to_string(),
+                payment: None,
+                message: Some(format!("Failed to create order: {}", e)),
+            });
+        }
+    }
     
     // Return the checkout response with payment details
     HttpResponse::Ok()

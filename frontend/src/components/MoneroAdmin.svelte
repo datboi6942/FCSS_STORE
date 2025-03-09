@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { auth } from '../stores/auth.js';
+  import { cart, cartTotal } from '../stores/cart.js';
   
   let transactions = [];
   let loading = true;

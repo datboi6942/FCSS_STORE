@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { auth } from '../stores/auth.js';
     import ProductCard from './ProductCard.svelte';
-    import { cartItems } from '../stores/cart.js';
+    import { cart, cartTotal } from '../stores/cart.js';
     import { fade } from 'svelte/transition';
     
     // Direct API URL
@@ -434,31 +434,51 @@
     }
 
     function addToCart(product) {
-      cartItems.update(items => {
-        const existingItem = items.find(item => item.id === product.id);
-        if (existingItem) {
-          return items.map(item => 
-            item.id === product.id 
-              ? {...item, quantity: item.quantity + 1}
-              : item
-          );
-        }
-        return [...items, { ...product, quantity: 1 }];
-      });
+      console.log("Adding to cart from Products.svelte:", product);
+      
+      try {
+        // Use the cart store's addItem method
+        cart.addItem({
+          id: product.id,
+          name: product.name,
+          price: product.price,
+          quantity: 1,
+          image: product.image || 'https://via.placeholder.com/150'
+        });
+        
+        console.log("Successfully added to cart!");
+      } catch (err) {
+        console.error("Error adding to cart:", err);
+      }
     }
 
-    // Add this function to handle "Buy Now"
+    // Update this function to use the cart store properly
     function handleBuyNow(product) {
-      // Clear the cart first
-      cartItems.set([]);
-      // Add this product to cart
-      cartItems.update(items => [...items, { ...product, quantity: 1 }]);
-      // Dispatch custom event to show shipping form
-      const event = new CustomEvent('showShipping', {
-        bubbles: true,
-        composed: true
-      });
-      document.dispatchEvent(event);
+      console.log("Buy Now clicked for:", product);
+      
+      try {
+        // Clear the cart first
+        cart.clear();
+        
+        // Add this product to cart
+        cart.addItem({
+          id: product.id,
+          name: product.name,
+          price: product.price,
+          quantity: 1,
+          image: product.image || 'https://via.placeholder.com/150'
+        });
+        
+        // Dispatch custom event to show shipping form
+        console.log("Dispatching showShipping event");
+        const event = new CustomEvent('showShipping', {
+          bubbles: true,
+          composed: true
+        });
+        document.dispatchEvent(event);
+      } catch (err) {
+        console.error("Error in handleBuyNow:", err);
+      }
     }
 </script>
 

@@ -1,6 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { cartItems, cartTotal } from '../stores/cart.js';
+  import { cart, cartTotal } from '../stores/cart.js';
+  import QRCode from 'qrcode';
+  import { auth } from '../stores/auth.js';
   
   export let params = {};
   
@@ -12,56 +14,97 @@
   let order_id = '';
   let qrCodeUrl = '';
   let socket = null;
+  let paymentData = null;
   
-  onMount(async () => {
+  onMount(() => {
+    console.log("MoneroCheckout component mounted");
+    
+    // Enhanced auth restoration with more logging
+    const tokenBackup = localStorage.getItem('auth_token_backup');
+    const userBackup = localStorage.getItem('auth_user_backup');
+    
+    console.log("Token backup exists:", !!tokenBackup);
+    console.log("User backup exists:", !!userBackup);
+    console.log("Current auth state:", $auth);
+    
+    if (tokenBackup) {
+      console.log("Restoring authentication from backup token");
+      
+      // More robust auth restoration
+      let userData = null;
+      try {
+        if (userBackup) {
+          userData = JSON.parse(userBackup);
+        }
+      } catch (e) {
+        console.error("Error parsing user backup:", e);
+      }
+      
+      auth.update(state => ({
+        ...state,
+        isAuthenticated: true,
+        token: tokenBackup,
+        user: userData || state.user,
+        isAdmin: userData ? userData.role === 'admin' : state.isAdmin
+      }));
+      
+      console.log("Auth state after restoration:", $auth);
+      
+      // Don't clear the token backup yet - keep it for the entire checkout process
+      // We'll clear it when the checkout is complete
+    }
+    
+    // Load payment data
+    loadPaymentData();
+    
+    // Don't clear the cart yet - let the user see what they're buying
+    // We'll clear it when the payment is confirmed
+  });
+  
+  function loadPaymentData() {
     try {
-      if (params && params.order_id) {
-        order_id = params.order_id;
-      } else {
-        const pathParts = window.location.pathname.split('/');
-        order_id = pathParts[pathParts.length - 1];
+      // Get payment data from localStorage
+      const storedPayment = localStorage.getItem('monero_payment');
+      const storedOrderId = localStorage.getItem('current_order_id');
+      
+      console.log("Retrieved from localStorage - payment:", storedPayment);
+      console.log("Retrieved from localStorage - orderId:", storedOrderId);
+      
+      if (storedPayment) {
+        paymentData = JSON.parse(storedPayment);
+        
+        if (paymentData && paymentData.address) {
+          // Generate QR code for the Monero address
+          generateQRCode(paymentData.address, paymentData.amount);
+        }
       }
       
-      console.log("Checking payment for order:", order_id);
-      
-      if (order_id) {
-        const response = await fetch(`http://localhost:5000/monero/order_payment/${order_id}`);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        console.log("Payment data:", data);
-        
-        if (data.success) {
-          paymentDetails = data;
-          orderStatus = data.payment?.status?.toLowerCase() || 'pending';
-          
-          // Generate QR code URL with proper Monero URI format
-          if (data.payment && data.payment.address) {
-            const address = data.payment.address;
-            const amount = data.payment.amount.toFixed(12); // Monero amounts use 12 decimal places
-            qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=monero:${address}?tx_amount=${amount}`;
-            console.log("Generated QR code for Monero address:", address);
-            
-            // Set up WebSocket connection for real-time updates
-            setupWebSocket();
-          }
-        } else {
-          error = data.error || 'Failed to load payment details';
-        }
-      } else {
-        error = 'No order ID provided';
+      if (storedOrderId) {
+        order_id = storedOrderId;
       }
       
-    } catch (e) {
-      console.error("Error loading payment details:", e);
-      error = e.message;
+      if (!paymentData && !order_id) {
+        error = "Payment information not found";
+      }
+    } catch (err) {
+      console.error("Error loading payment data:", err);
+      error = "Failed to load payment information";
     } finally {
       loading = false;
     }
-  });
+  }
+  
+  async function generateQRCode(address, amount) {
+    try {
+      // Format: monero:<address>?tx_amount=<amount>
+      const moneroUri = `monero:${address}?tx_amount=${amount}`;
+      
+      qrCodeUrl = await QRCode.toDataURL(moneroUri);
+    } catch (err) {
+      console.error("QR code generation error:", err);
+      // Still allow checkout without QR code
+    }
+  }
   
   function setupWebSocket() {
     // Close existing socket if any
@@ -167,17 +210,17 @@
   <h1>Monero Payment</h1>
   
   {#if loading}
-    <div class="loading">Loading payment details...</div>
+    <div class="loading">Loading payment information...</div>
   {:else if error}
     <div class="error">
-      <p>Error: {error}</p>
+      <p>{error}</p>
       <button on:click={() => window.history.back()}>Go Back</button>
     </div>
-  {:else if paymentDetails}
+  {:else if paymentData}
     <div class="payment-details">
       <div class="order-summary">
         <h2>Order Summary</h2>
-        {#each $cartItems as item}
+        {#each $cart as item}
           <div class="order-item">
             <span>{item.name} × {item.quantity}</span>
             <span>${(item.price * item.quantity).toFixed(2)}</span>
@@ -195,7 +238,7 @@
           {#if qrCodeUrl}
             <img src={qrCodeUrl} alt="Monero QR Code" />
           {:else}
-            <div class="qr-placeholder">QR Code Loading...</div>
+            <div class="qr-placeholder">QR Code Unavailable</div>
           {/if}
         </div>
         
@@ -208,14 +251,14 @@
           
           <div class="detail-row">
             <span>Amount:</span>
-            <code>{paymentDetails.payment?.amount.toFixed(12)} XMR</code>
-            <button class="copy-btn" on:click={() => copyToClipboard(paymentDetails.payment?.amount.toFixed(12))}>Copy</button>
+            <code>{paymentData.amount} XMR</code>
+            <button class="copy-btn" on:click={() => copyToClipboard(paymentData.amount.toFixed(12))}>Copy</button>
           </div>
           
           <div class="detail-row">
             <span>Address:</span>
-            <code class="monero-address">{paymentDetails.payment?.address}</code>
-            <button class="copy-btn" on:click={() => copyToClipboard(paymentDetails.payment?.address)}>Copy</button>
+            <code class="monero-address">{paymentData.address}</code>
+            <button class="copy-btn" on:click={() => copyToClipboard(paymentData.address)}>Copy</button>
           </div>
         </div>
         

@@ -1,6 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { cartItems, cartTotal } from '../stores/cart.js';
+  import { cart, cartTotal } from '../stores/cart.js';
   
   const dispatch = createEventDispatcher();
   
@@ -25,7 +25,7 @@
     
     // Prepare checkout data
     const checkoutData = {
-      items: $cartItems,
+      items: $cart,
       shipping_info: shippingInfo,
       total: $cartTotal
     };
