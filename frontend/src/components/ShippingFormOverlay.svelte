@@ -1,6 +1,5 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { cart, cartTotal } from '../stores/cart.js';
   
   const dispatch = createEventDispatcher();
   
@@ -11,37 +10,30 @@
     city: '',
     state: '',
     zip: '',
-    country: ''
+    country: 'United States'
   };
   
   function handleSubmit() {
     // Validate form
-    if (!shippingInfo.name || !shippingInfo.email || !shippingInfo.address || 
-        !shippingInfo.city || !shippingInfo.state || !shippingInfo.zip || 
-        !shippingInfo.country) {
-      alert('Please fill in all fields');
+    if (!shippingInfo.name || !shippingInfo.address || !shippingInfo.city || 
+        !shippingInfo.state || !shippingInfo.zip || !shippingInfo.country || 
+        !shippingInfo.email) {
+      alert('Please fill out all fields');
       return;
     }
     
-    // Prepare checkout data
-    const checkoutData = {
-      items: $cart,
-      shipping_info: shippingInfo,
-      total: $cartTotal
-    };
-    
-    dispatch('submit', checkoutData);
+    // Dispatch the submit event with the shipping info
+    dispatch('submit', shippingInfo);
   }
   
-  function handleCancel() {
+  function close() {
     dispatch('close');
   }
 </script>
 
 <div class="shipping-overlay">
-  <div class="shipping-content">
-    <h2>Enter Shipping Information</h2>
-    
+  <div class="shipping-form">
+    <h2>Shipping Information</h2>
     <form on:submit|preventDefault={handleSubmit}>
       <div class="form-group">
         <label for="name">Full Name</label>
@@ -54,37 +46,37 @@
       </div>
       
       <div class="form-group">
-        <label for="address">Address</label>
+        <label for="address">Street Address</label>
         <input type="text" id="address" bind:value={shippingInfo.address} required>
       </div>
       
-      <div class="form-group">
-        <label for="city">City</label>
-        <input type="text" id="city" bind:value={shippingInfo.city} required>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="city">City</label>
+          <input type="text" id="city" bind:value={shippingInfo.city} required>
+        </div>
+        
+        <div class="form-group">
+          <label for="state">State/Province</label>
+          <input type="text" id="state" bind:value={shippingInfo.state} required>
+        </div>
       </div>
       
-      <div class="form-group">
-        <label for="state">State/Province</label>
-        <input type="text" id="state" bind:value={shippingInfo.state} required>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="zip">ZIP/Postal Code</label>
+          <input type="text" id="zip" bind:value={shippingInfo.zip} required>
+        </div>
+        
+        <div class="form-group">
+          <label for="country">Country</label>
+          <input type="text" id="country" bind:value={shippingInfo.country} required>
+        </div>
       </div>
       
-      <div class="form-group">
-        <label for="zip">Zip/Postal Code</label>
-        <input type="text" id="zip" bind:value={shippingInfo.zip} required>
-      </div>
-      
-      <div class="form-group">
-        <label for="country">Country</label>
-        <input type="text" id="country" bind:value={shippingInfo.country} required>
-      </div>
-      
-      <div class="form-actions">
-        <button type="button" class="btn-secondary" on:click={handleCancel}>
-          Cancel
-        </button>
-        <button type="submit" class="btn-primary">
-          Continue to Payment
-        </button>
+      <div class="button-group">
+        <button type="button" class="cancel-btn" on:click={close}>Cancel</button>
+        <button type="submit" class="submit-btn">Continue to Payment</button>
       </div>
     </form>
   </div>
@@ -95,80 +87,76 @@
     position: fixed;
     top: 0;
     left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.75);
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 1100;
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 9999;
   }
   
-  .shipping-content {
+  .shipping-form {
     background-color: white;
-    padding: 25px;
+    padding: 2rem;
     border-radius: 8px;
-    max-width: 550px;
     width: 90%;
-    box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+    max-width: 500px;
+    max-height: 90vh;
+    overflow-y: auto;
   }
   
   h2 {
-    margin-bottom: 20px;
-    color: #333;
+    margin-top: 0;
+    margin-bottom: 1.5rem;
     text-align: center;
   }
   
   .form-group {
-    margin-bottom: 15px;
+    margin-bottom: 1rem;
+    width: 100%;
+  }
+  
+  .form-row {
+    display: flex;
+    gap: 1rem;
   }
   
   label {
     display: block;
-    margin-bottom: 5px;
+    margin-bottom: 0.5rem;
     font-weight: bold;
-    color: #555;
   }
   
   input {
     width: 100%;
-    padding: 10px;
-    border: 1px solid #ddd;
+    padding: 0.75rem;
+    border: 1px solid #ccc;
     border-radius: 4px;
-    font-size: 16px;
+    font-size: 1rem;
   }
   
-  .form-actions {
+  .button-group {
     display: flex;
     justify-content: space-between;
-    margin-top: 20px;
+    margin-top: 1.5rem;
   }
   
-  .btn-primary {
-    background-color: #2ecc71;
-    color: white;
+  .cancel-btn, .submit-btn {
+    padding: 0.75rem 1.5rem;
     border: none;
-    padding: 12px 20px;
     border-radius: 4px;
     cursor: pointer;
-    font-weight: bold;
+    font-size: 1rem;
   }
   
-  .btn-secondary {
-    background-color: #95a5a6;
+  .cancel-btn {
+    background-color: #e0e0e0;
+    color: #333;
+  }
+  
+  .submit-btn {
+    background-color: #4CAF50;
     color: white;
-    border: none;
-    padding: 12px 20px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: bold;
-  }
-  
-  .btn-primary:hover {
-    background-color: #27ae60;
-  }
-  
-  .btn-secondary:hover {
-    background-color: #7f8c8d;
   }
 </style> 

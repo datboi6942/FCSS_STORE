@@ -1,6 +1,5 @@
-use actix_web::{web, HttpResponse, Responder, HttpRequest, get};
+use actix_web::{web, HttpResponse, Responder, HttpRequest, get, post};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use chrono::Utc;
 use crate::AppState;
 use log::{info, error};
@@ -10,6 +9,7 @@ use sqlx::SqlitePool;
 use serde_json::json;
 use rand::Rng;
 use crate::types::ShippingInfo;
+use sqlx::Column;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum OrderStatus {
@@ -32,22 +32,6 @@ pub struct Order {
     pub total_amount: f64,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UpdateOrderStatusRequest {
-    pub status: OrderStatus,
-}
-
-#[derive(Deserialize)]
-pub struct CreateOrderData {
-    pub user_id: String,
-    pub product_id: String,
-}
-
-#[derive(Deserialize)]
-pub struct GetOrdersQuery {
-    pub user_id: String,
 }
 
 // Add OrderRecord struct for database queries
@@ -100,15 +84,6 @@ impl From<OrderRecord> for Order {
             updated_at: record.updated_at,
         }
     }
-}
-
-// Add this struct for the create order request
-#[derive(Deserialize)]
-pub struct CreateOrderRequest {
-    pub shipping_info: ShippingInfo,
-    pub payment_id: String,
-    pub total_amount: f64,
-    pub user_id: Option<String>,
 }
 
 // Add this to your existing Order struct or create it if not present
@@ -214,400 +189,6 @@ pub async fn create_order(
     })
 }
 
-/// Structure for updating an order's status.
-#[derive(Deserialize)]
-pub struct OrderStatusUpdate {
-    pub order_id: String,
-    pub new_status: String,
-}
-
-/// Admin endpoint to update an order's status.
-/// Checks for the dummy Authorization header ("Bearer dummy_jwt").
-pub async fn update_order_status(
-    pool: &SqlitePool,
-    order_id: &str,
-    status: OrderStatus,
-) -> Result<bool, sqlx::Error> {
-    let status_str = status.to_string();
-    let now = Utc::now().timestamp();
-    
-    let result = sqlx::query("UPDATE orders SET status = ?, updated_at = ? WHERE id = ?")
-        .bind(&status_str)
-        .bind(now)
-        .bind(order_id)
-        .execute(pool)
-        .await?;
-    
-    Ok(result.rows_affected() > 0)
-}
-
-/// Get all orders for a specific user
-pub async fn get_user_orders(
-    query: web::Query<GetOrdersQuery>,
-    state: web::Data<AppState>
-) -> impl Responder {
-    info!("Getting orders for user_id: {}", query.user_id);
-    
-    // Use dynamic SQL instead
-    let orders = sqlx::query(
-        "SELECT o.id, o.user_id, o.status, o.shipping_name, o.total_amount, o.created_at 
-        FROM orders o
-        WHERE o.user_id = ?
-         ORDER BY o.created_at DESC"
-    )
-    .bind(&query.user_id)
-    .fetch_all(&state.db)
-    .await;
-    
-    match orders {
-        Ok(orders) => {
-            if orders.is_empty() {
-                info!("No orders found for user_id: {}", query.user_id);
-            } else {
-                info!("Found {} orders for user_id: {}", orders.len(), query.user_id);
-            }
-            
-            // Map to JSON response
-            let orders_json: Vec<serde_json::Value> = orders
-                .iter()
-                .map(|row| {
-                    json!({
-                        "id": row.get::<String, _>("id"),
-                        "user_id": row.get::<String, _>("user_id"),
-                        "status": row.get::<String, _>("status"),
-                        "total_amount": row.get::<f64, _>("total_amount"),
-                        "created_at": row.get::<i64, _>("created_at"),
-                    })
-                })
-                .collect();
-            
-            HttpResponse::Ok().json(orders_json)
-        },
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("Failed to fetch orders: {}", e)
-        })),
-    }
-}
-
-/// Register all order-related routes.
-pub fn init_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("/orders")
-            .route("/create", web::post().to(create_order_handler))
-            .service(get_order_status_endpoint)
-            .route("/update/{order_id}", web::post().to(update_order_status_handler))
-            .service(get_authenticated_user_orders)
-            .route("/create-test", web::post().to(create_test_order))
-            .service(debug_orders)
-    );
-}
-
-pub async fn order_history(data: web::Data<crate::AppState>, req: HttpRequest) -> impl Responder {
-    // Verify JWT token
-    match auth::validate_token(req) {
-        Ok(claims) => {
-            let user_id = &claims.sub;
-            
-            // Get user role
-            let user_role = match sqlx::query!(
-                "SELECT role FROM users WHERE id = ?",
-                user_id
-            )
-            .fetch_optional(&data.db)
-            .await {
-                Ok(Some(user)) => user.role,
-                Ok(None) => return HttpResponse::Unauthorized().json(serde_json::json!({"error": "User not found"})),
-                Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("Database error: {}", e)})),
-            };
-            
-            // Define the query format
-            let query_string = if user_role == "admin" {
-                format!(
-                    r#"
-                    SELECT o.id, o.user_id, u.username, o.product_id, 
-                           p.name as product_name, p.price, o.status, o.created_at
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    JOIN products p ON o.product_id = p.id
-                    ORDER BY o.created_at DESC
-                    "#
-                )
-            } else {
-                format!(
-                    r#"
-                    SELECT o.id, o.user_id, u.username, o.product_id, 
-                           p.name as product_name, p.price, o.status, o.created_at
-                    FROM orders o
-                    JOIN users u ON o.user_id = u.id
-                    JOIN products p ON o.product_id = p.id
-                    WHERE o.user_id = ?
-                    ORDER BY o.created_at DESC
-                    "#
-                )
-            };
-            
-            // Execute the appropriate query
-            let orders = if user_role == "admin" {
-                sqlx::query(&query_string)
-                    .fetch_all(&data.db)
-                    .await
-            } else {
-                sqlx::query(&query_string)
-                    .bind(user_id)
-                    .fetch_all(&data.db)
-                    .await
-            };
-            
-            match orders {
-                Ok(rows) => {
-                    // Convert rows to JSON manually
-                    let mut orders_json = Vec::new();
-                    for row in rows {
-                        // Extract values from row
-                        let id: &str = row.get("id");
-                        let user_id: &str = row.get("user_id");
-                        let username: &str = row.get("username");
-                        let product_id: &str = row.get("product_id");
-                        let product_name: &str = row.get("product_name");
-                        let price: f64 = row.get("price");
-                        let status: &str = row.get("status");
-                        let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
-                        
-                        orders_json.push(serde_json::json!({
-                            "id": id,
-                            "user_id": user_id,
-                            "username": username,
-                            "product_id": product_id,
-                            "product_name": product_name,
-                            "price": price,
-                            "status": status,
-                            "created_at": created_at,
-                        }));
-                    }
-                    
-                    HttpResponse::Ok().json(orders_json)
-                },
-                Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": format!("Failed to fetch orders: {}", e)})),
-            }
-        }
-        Err(e) => HttpResponse::Unauthorized().json(serde_json::json!({"error": format!("Invalid token: {}", e)})),
-    }
-}
-
-// Add this implementation to serialize OrderStatus consistently
-impl ToString for OrderStatus {
-    fn to_string(&self) -> String {
-        match self {
-            OrderStatus::Pending => "Pending".to_string(),
-            OrderStatus::AwaitingPayment => "AwaitingPayment".to_string(),
-            OrderStatus::Paid => "Paid".to_string(),
-            OrderStatus::Shipped => "Shipped".to_string(),
-            OrderStatus::Delivered => "Delivered".to_string(),
-            OrderStatus::Completed => "Completed".to_string(),
-            OrderStatus::Cancelled => "Cancelled".to_string(),
-        }
-    }
-}
-
-// Update the create_test_order function to use the token user ID
-pub async fn create_test_order(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
-    // Extract user ID from token
-    let user_id = match extract_user_id_from_token(&req) {
-        Some(id) => id,
-        None => "usr-user1".to_string() // Default to test user if no token
-    };
-    
-    // Create a test monero payment first
-    let payment_id = format!("pay-test-{}", Uuid::new_v4().simple());
-    let now = Utc::now().timestamp();
-    
-    let payment_result = sqlx::query("INSERT INTO monero_payments (payment_id, amount, address, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(&payment_id)
-        .bind(99.99)
-        .bind("44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A")
-        .bind("Pending")
-        .bind(now)
-        .bind(now)
-        .execute(&state.db)
-        .await;
-    
-    if let Err(e) = payment_result {
-        error!("Failed to create test payment: {}", e);
-        return HttpResponse::InternalServerError().json(
-            serde_json::json!({"error": "Failed to create test payment"})
-        );
-    }
-    
-    // Now create the order
-    let order_id = format!("ord-test-{}", Uuid::new_v4().simple());
-    
-    let shipping_info = ShippingInfo {
-        name: "Test User".to_string(),
-        address: "123 Test St".to_string(),
-        city: "Test City".to_string(),
-        state: "Test State".to_string(),
-        zip: "12345".to_string(),
-        country: "Test Country".to_string(),
-        email: "test@example.com".to_string(),
-    };
-
-    let result = sqlx::query("INSERT INTO orders (id, user_id, payment_id, status, shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, shipping_country, shipping_email, total_amount, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(&order_id)
-        .bind(&user_id)
-        .bind(&payment_id)
-        .bind("Pending")
-        .bind(&shipping_info.name)
-        .bind(&shipping_info.address)
-        .bind(&shipping_info.city)
-        .bind(&shipping_info.state)
-        .bind(&shipping_info.zip)
-        .bind(&shipping_info.country)
-        .bind(&shipping_info.email)
-        .bind(99.99)
-        .bind(now)
-        .bind(now)
-    .execute(&state.db)
-    .await;
-    
-    match result {
-        Ok(_) => {
-            info!("Test order created successfully: {}", order_id);
-            HttpResponse::Created().json(serde_json::json!({
-                    "id": order_id,
-                "status": "Pending",
-                    "created_at": now
-            }))
-        }
-        Err(e) => {
-            error!("Failed to create test order: {}", e);
-            HttpResponse::InternalServerError().json(
-                serde_json::json!({"error": "Failed to create test order"})
-            )
-        }
-    }
-}
-
-// Get order by ID
-pub async fn get_order(
-    pool: &SqlitePool,
-    order_id: &str,
-) -> Result<Option<Order>, sqlx::Error> {
-    let row = sqlx::query("SELECT id, user_id, payment_id, status, shipping_name, shipping_address, shipping_city, shipping_state, shipping_zip, shipping_country, shipping_email, total_amount, created_at, updated_at FROM orders WHERE id = ?")
-        .bind(order_id)
-        .fetch_optional(pool)
-        .await?;
-    
-    if let Some(row) = row {
-        let id: String = row.try_get("id")?;
-        let user_id: Option<String> = row.try_get("user_id")?;
-        let payment_id: String = row.try_get("payment_id")?;
-        let status: String = row.try_get("status")?;
-        let shipping_name: String = row.try_get("shipping_name")?;
-        let shipping_address: String = row.try_get("shipping_address")?;
-        let shipping_city: String = row.try_get("shipping_city")?;
-        let shipping_state: String = row.try_get("shipping_state")?;
-        let shipping_zip: String = row.try_get("shipping_zip")?;
-        let shipping_country: String = row.try_get("shipping_country")?;
-        let shipping_email: String = row.try_get("shipping_email")?;
-        let total_amount: f64 = row.try_get("total_amount")?;
-        let created_at: i64 = row.try_get("created_at")?;
-        let updated_at: i64 = row.try_get("updated_at")?;
-        
-        let status = match status.as_str() {
-            "Pending" => OrderStatus::Pending,
-            "AwaitingPayment" => OrderStatus::AwaitingPayment,
-            "Paid" => OrderStatus::Paid,
-            "Shipped" => OrderStatus::Shipped,
-            "Delivered" => OrderStatus::Delivered,
-            "Completed" => OrderStatus::Completed,
-            "Cancelled" => OrderStatus::Cancelled,
-            _ => OrderStatus::Pending,
-        };
-        
-        let shipping_info = ShippingInfo {
-            name: shipping_name,
-            address: shipping_address,
-            city: shipping_city,
-            state: shipping_state,
-            zip: shipping_zip,
-            country: shipping_country,
-            email: shipping_email,
-        };
-        
-        Ok(Some(Order {
-            id,
-            user_id,
-            payment_id,
-            status,
-            shipping_info,
-            total_amount,
-            created_at,
-            updated_at,
-        }))
-    } else {
-        Ok(None)
-    }
-}
-
-// API endpoints
-pub async fn check_order_status(
-    state: web::Data<AppState>,
-    order_id: web::Path<String>,
-) -> impl Responder {
-    match get_order(&state.db, &order_id).await {
-        Ok(Some(order)) => HttpResponse::Ok().json(order),
-        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
-            "error": "Order not found"
-        })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("Failed to fetch order: {}", e)
-        })),
-    }
-}
-
-// Update the create_order handler to use web::Json
-pub async fn create_order_handler(
-    state: web::Data<AppState>,
-    req: web::Json<CreateOrderRequest>,
-) -> impl Responder {
-    let result = create_order(
-        &state.db,
-        req.shipping_info.clone(),
-        Vec::new(),
-        req.total_amount,
-        req.user_id.clone(),
-    ).await;
-
-    match result {
-        Ok(order) => HttpResponse::Ok().json(order),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("Failed to create order: {}", e)
-        }))
-    }
-}
-
-// Update the update_order_status handler
-pub async fn update_order_status_handler(
-    state: web::Data<AppState>,
-    order_id: web::Path<String>,
-    req: web::Json<UpdateOrderStatusRequest>,
-) -> impl Responder {
-    let result = update_order_status(&state.db, &order_id, req.status.clone()).await;
-
-    match result {
-        Ok(true) => HttpResponse::Ok().json(serde_json::json!({
-            "success": true,
-            "message": "Order status updated successfully"
-        })),
-        Ok(false) => HttpResponse::NotFound().json(serde_json::json!({
-            "error": "Order not found"
-        })),
-        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": format!("Failed to update order status: {}", e)
-        }))
-    }
-}
-
 // Add this new endpoint for public order status lookup
 #[get("/status/{id}")]
 pub async fn get_order_status_endpoint(path: web::Path<String>, app_state: web::Data<AppState>) -> impl Responder {
@@ -651,7 +232,7 @@ pub async fn get_order_status_endpoint(path: web::Path<String>, app_state: web::
                     "order": order
                 }))
             },
-            Ok(None) => {
+        Ok(None) => {
                 info!("Order not found: {}", order_id);
                 HttpResponse::NotFound().json(json!({
                     "success": false,
@@ -670,105 +251,86 @@ pub async fn get_order_status_endpoint(path: web::Path<String>, app_state: web::
 
 // Add this endpoint to get authenticated user's orders
 #[get("/my-orders")]
-pub async fn get_authenticated_user_orders(req: HttpRequest, app_state: web::Data<AppState>) -> impl Responder {
-    // Extract user ID from authentication token
-    let user_id = match extract_user_id_from_token(&req) {
-        Some(id) => id,
-        None => {
+pub async fn get_authenticated_user_orders(
+    req: HttpRequest,
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    // Validate authentication
+    let claims = match auth::validate_token(req) {
+        Ok(claims) => claims,
+        Err(e) => {
             return HttpResponse::Unauthorized().json(json!({
                 "success": false,
-                "error": "Authentication required"
+                "error": e
             }));
         }
     };
     
-    info!("Fetching orders for user ID: {}", user_id);
+    let user_id = claims.sub;
     
-    // Query to get user's orders with proper WHERE clause
-    let query = r#"
-        SELECT id, status, total_amount, created_at, updated_at, payment_id
-        FROM orders 
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-    "#;
-    
-    match sqlx::query(query)
-        .bind(&user_id)
-        .fetch_all(&app_state.db)
-        .await {
-            Ok(rows) => {
-                if rows.is_empty() {
-                    info!("No orders found for user {}", user_id);
-                    return HttpResponse::Ok().json(json!({
-                        "success": true,
-                        "orders": [],
-                        "count": 0
-                    }));
-                }
-                
-                let orders = rows.iter().map(|row| {
-                    json!({
-                        "id": row.get::<String, _>("id"),
-                        "status": row.get::<String, _>("status"),
-                        "total_amount": row.get::<f64, _>("total_amount"),
-                        "created_at": row.get::<i64, _>("created_at"),
-                        "updated_at": row.get::<i64, _>("updated_at"),
-                        "payment_id": row.get::<Option<String>, _>("payment_id")
-                    })
-                }).collect::<Vec<serde_json::Value>>();
-                
-                info!("Found {} orders for user {}", orders.len(), user_id);
-                
-                HttpResponse::Ok().json(json!({
-                    "success": true,
-                    "orders": orders,
-                    "count": orders.len()
-                }))
-            },
-            Err(e) => {
-                error!("Database error while fetching orders: {}", e);
-                HttpResponse::InternalServerError().json(json!({
-                    "success": false,
-                    "error": format!("Failed to fetch orders: {}", e)
-                }))
-            }
-        }
-}
-
-// Better token extraction with more debugging
-fn extract_user_id_from_token(req: &HttpRequest) -> Option<String> {
-    if let Some(auth_header) = req.headers().get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            info!("Auth header: {}", auth_str);
-            if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                info!("Token (first 20 chars): {}", &token[..std::cmp::min(20, token.len())]);
-                
-                // Try to extract from JWT first
-                match crate::session::verify_jwt(token) {
-                    Ok(claims) => {
-                        info!("Successfully extracted user ID from token: {}", claims.sub);
-                        return Some(claims.sub);
-                    },
-                    Err(e) => {
-                        error!("JWT verification failed: {}", e);
-                        
-                        // As a fallback for testing, check if the token contains a user ID pattern
-                        if token.contains("usr-") {
-                            let parts: Vec<&str> = token.split("usr-").collect();
-                            if parts.len() > 1 {
-                                let possible_id = format!("usr-{}", parts[1]);
-                                info!("Extracted possible user ID from token pattern: {}", possible_id);
-                                return Some(possible_id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // Special case for admin tokens
+    if claims.role == "admin" {
+        info!("Admin user accessing orders");
+        // Return some dummy orders for admin users
+        return HttpResponse::Ok().json(json!({
+            "success": true,
+            "count": 1,
+            "orders": [{
+                "id": "ORD-ADMIN-SAMPLE",
+                "status": "Completed",
+                "total_amount": 99.99,
+                "created_at": chrono::Utc::now().timestamp(),
+                "payment_id": "sample-payment-id",
+                "monero_address": "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A" // Sample address
+            }]
+        }));
     }
     
-    error!("No valid authorization header or token found");
-    None
+    // Query orders with Monero addresses
+    match sqlx::query(
+        "SELECT o.id, o.status, o.total_amount, o.created_at, o.payment_id, 
+         mp.address as monero_address, mp.status as payment_status
+         FROM orders o
+         LEFT JOIN monero_payments mp ON o.payment_id = mp.payment_id
+         WHERE o.user_id = ?
+         ORDER BY o.created_at DESC"
+    )
+    .bind(&user_id)
+    .fetch_all(&app_state.db)
+    .await {
+        Ok(rows) => {
+            let orders: Vec<serde_json::Value> = rows.iter().map(|row| {
+                // Check if monero_address exists and print for debugging
+                let address = row.get::<Option<String>, _>("monero_address");
+                log::info!("Order {} has monero address: {:?}", 
+                           row.get::<String, _>("id"), 
+                           address);
+                
+                json!({
+                    "id": row.get::<String, _>("id"),
+                    "status": row.get::<String, _>("status"),
+                    "total_amount": row.get::<f64, _>("total_amount"),
+                    "created_at": row.get::<i64, _>("created_at"),
+                    "payment_id": row.get::<String, _>("payment_id"),
+                    "payment_status": row.get::<Option<String>, _>("payment_status"),
+                    "monero_address": address
+                })
+            }).collect();
+            
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "count": orders.len(),
+                "orders": orders
+            }))
+        },
+        Err(e) => {
+            error!("Database error: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Failed to fetch orders: {}", e)
+            }))
+        }
+    }
 }
 
 // Near the top of your file, add this debugging route
@@ -844,8 +406,340 @@ pub fn init_orders_routes(cfg: &mut web::ServiceConfig) {
         web::scope("/orders")
             .service(debug_orders)
             .service(get_authenticated_user_orders)
+            .service(get_order_status)
+            .service(dump_order_data)
+            .service(force_update_order_status)
+            .service(diagnose_and_fix_status_mismatch)
     );
     
     // Register the debug-token endpoint at the root level
     cfg.service(debug_token_endpoint);
+}
+
+// Add this endpoint for order status lookup
+#[get("/status/{order_id}")]
+pub async fn get_order_status(
+    order_id: web::Path<String>,
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    info!("Looking up status for order: {}", order_id);
+    
+    // Create a longer-lived value
+    let order_id_str = order_id.as_ref().to_string();
+    
+    match sqlx::query!(
+        r#"
+        SELECT id, status, total_amount, created_at, updated_at, payment_id,
+               shipping_name, shipping_address, shipping_city, shipping_state,
+               shipping_zip, shipping_country
+        FROM orders 
+        WHERE id = ?
+        "#,
+        order_id_str  // Use the longer-lived value here
+    )
+    .fetch_optional(&app_state.db)
+    .await {
+        Ok(Some(order)) => {
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "order": {
+                    "id": order.id,
+                    "status": order.status,
+                    "total_amount": order.total_amount,
+                    "created_at": order.created_at,
+                    "updated_at": order.updated_at,
+                    "payment_id": order.payment_id,
+                    "shipping": {
+                        "name": order.shipping_name,
+                        "address": order.shipping_address,
+                        "city": order.shipping_city,
+                        "state": order.shipping_state,
+                        "zip": order.shipping_zip,
+                        "country": order.shipping_country
+                    }
+                }
+            }))
+        },
+        Ok(None) => {
+            HttpResponse::NotFound().json(json!({
+                "success": false,
+                "error": "Order not found"
+            }))
+        },
+        Err(e) => {
+            error!("Database error looking up order: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Failed to retrieve order"
+            }))
+        }
+    }
+}
+
+// Add this endpoint to see the raw order data
+#[get("/debug/dump-order/{order_id}")]
+pub async fn dump_order_data(
+    app_state: web::Data<AppState>,
+    path: web::Path<String>
+) -> impl Responder {
+    let order_id = path.into_inner();
+    
+    // Query the order with all related payment data
+    let order_data = sqlx::query(
+        "SELECT o.*, mp.payment_id, mp.status as payment_status, mp.address 
+         FROM orders o 
+         LEFT JOIN monero_payments mp ON o.payment_id = mp.payment_id 
+         WHERE o.id = ?"
+    )
+    .bind(&order_id)
+    .fetch_optional(&app_state.db)
+    .await;
+    
+    match order_data {
+        Ok(Some(row)) => {
+            // Convert to a map for easy viewing
+            let mut data = serde_json::Map::new();
+            
+            // Extract all columns
+            for i in 0..row.columns().len() {
+                let col = row.columns().get(i).unwrap();
+                let name = col.name();
+                
+                if let Ok(val) = row.try_get::<String, _>(i) {
+                    data.insert(name.to_string(), serde_json::Value::String(val));
+                } else if let Ok(val) = row.try_get::<i64, _>(i) {
+                    data.insert(name.to_string(), serde_json::Value::Number(val.into()));
+                } else if let Ok(val) = row.try_get::<f64, _>(i) {
+                    // Convert to string to avoid precision issues
+                    data.insert(name.to_string(), serde_json::Value::String(val.to_string()));
+                } else if let Ok(val) = row.try_get::<Option<String>, _>(i) {
+                    match val {
+                        Some(v) => data.insert(name.to_string(), serde_json::Value::String(v)),
+                        None => data.insert(name.to_string(), serde_json::Value::Null),
+                    };
+                }
+            }
+            
+            HttpResponse::Ok().json(serde_json::Value::Object(data))
+        },
+        Ok(None) => {
+            HttpResponse::NotFound().json(json!({
+                "error": "Order not found"
+            }))
+        },
+        Err(e) => {
+            log::error!("Database error: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "error": format!("Database error: {}", e)
+            }))
+        }
+    }
+}
+
+// Add a direct endpoint to force update order status
+#[post("/admin/force-update-order/{order_id}/{status}")]
+pub async fn force_update_order_status(
+    app_state: web::Data<AppState>,
+    path: web::Path<(String, String)>
+) -> impl Responder {
+    let (order_id, status) = path.into_inner();
+    
+    log::info!("🔨 Manually forcing order {} status to {}", order_id, status);
+    
+    // First update the order status
+    match sqlx::query!(
+        "UPDATE orders SET status = ? WHERE id = ?",
+        status,
+        order_id
+    )
+    .execute(&app_state.db)
+    .await {
+        Ok(_) => {
+            // Then find the payment_id for this order
+            let payment_query = sqlx::query!(
+                "SELECT payment_id FROM orders WHERE id = ?",
+                order_id
+            )
+            .fetch_optional(&app_state.db)
+            .await;
+            
+            // Now update the payment status if we found a payment_id
+            match payment_query {
+                Ok(Some(record)) if record.payment_id.is_some() => {
+                    let payment_id = record.payment_id.unwrap();
+                    
+                    // Update the payment status directly - SQLite doesn't support JOIN in UPDATE
+                    let payment_update = sqlx::query!(
+                        "UPDATE monero_payments SET status = ? WHERE payment_id = ?",
+                        status,
+                        payment_id
+                    )
+                    .execute(&app_state.db)
+                    .await;
+                    
+                    if let Err(e) = payment_update {
+                        log::warn!("Couldn't update payment status: {}", e);
+            } else {
+                        log::info!("Successfully updated payment status for payment_id: {}", payment_id);
+                    }
+                },
+                Ok(_) => log::warn!("No payment_id found for order {}", order_id),
+                Err(e) => log::error!("Error looking up payment_id: {}", e)
+            }
+            
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "message": format!("Order {} status updated to {}", order_id, status)
+            }))
+        },
+        Err(e) => {
+            log::error!("Failed to update order status: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "error": format!("Failed to update status: {}", e)
+            }))
+        }
+    }
+}
+
+// Add a special diagnostic endpoint for debugging payment/order status issues
+#[post("/fix-order-status-mismatch")]
+pub async fn diagnose_and_fix_status_mismatch(
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    log::info!("🔍 RUNNING FULL DIAGNOSTIC OF PAYMENT STATUS MISMATCH");
+    
+    // Step 1: Find all confirmed payments
+    let confirmed_payments = sqlx::query!(
+        "SELECT payment_id, status, order_id FROM monero_payments WHERE status = 'Confirmed' OR status = 'confirmed'"
+    )
+    .fetch_all(&app_state.db)
+    .await;
+    
+    if let Err(e) = &confirmed_payments {
+        log::error!("Database error querying payments: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Database error: {}", e)
+        }));
+    }
+    
+    let confirmed_payments = confirmed_payments.unwrap();
+    log::info!("Found {} confirmed payments", confirmed_payments.len());
+    
+    let mut fixed_orders = 0;
+    let mut mismatched_orders = 0;
+    let mut missing_orders = 0;
+    let mut diagnostic_info = Vec::new();
+    
+    // Step 2: Check each confirmed payment and ensure the linked order is also confirmed
+    for payment in confirmed_payments {
+        let payment_id = payment.payment_id.clone().unwrap_or_default();
+        let payment_order_id = payment.order_id.clone().unwrap_or_default();
+        
+        if payment_id.is_empty() {
+            log::warn!("Skipping payment with empty payment_id");
+            continue;
+        }
+        
+        // Get the associated order(s) using standard query to avoid type issues
+        let query = if !payment_order_id.is_empty() {
+            // Try to find by order_id in payment record
+            "SELECT id, status FROM orders WHERE id = ?"
+        } else {
+            // Otherwise look up by payment_id
+            "SELECT id, status FROM orders WHERE payment_id = ?"
+        };
+        
+        let param = if !payment_order_id.is_empty() {
+            payment_order_id.clone()
+        } else {
+            payment_id.clone()
+        };
+        
+        let orders = sqlx::query(query)
+            .bind(param)
+            .fetch_all(&app_state.db)
+            .await;
+        
+        if let Err(e) = &orders {
+            log::error!("Error looking up order for payment {}: {}", payment_id, e);
+            continue;
+        }
+        
+        let orders = orders.unwrap();
+        
+        if orders.is_empty() {
+            log::warn!("❌ No orders found for confirmed payment {}", payment_id);
+            missing_orders += 1;
+            diagnostic_info.push(json!({
+                "type": "missing_order",
+                "payment_id": payment_id,
+                "payment_status": payment.status,
+                "payment_order_id": payment_order_id
+            }));
+            continue;
+        }
+        
+        // Check each associated order
+        for row in orders {
+            let order_id: String = row.get("id");
+            let order_status: String = row.get("status");
+            
+            if order_status != "Confirmed" && order_status != "Completed" {
+                log::warn!("⚠️ Found status mismatch! Payment {} is confirmed but order {} has status {}", 
+                           payment_id, order_id, order_status);
+                
+                // This is a mismatch - let's fix it
+                match sqlx::query!(
+                    "UPDATE orders SET status = ? WHERE id = ?",
+                    "Confirmed",
+                    order_id
+                )
+                .execute(&app_state.db)
+                .await {
+                    Ok(_) => {
+                        log::info!("✅ Successfully fixed order {} status to Confirmed", order_id);
+                        fixed_orders += 1;
+                        diagnostic_info.push(json!({
+                            "type": "fixed",
+                            "order_id": order_id,
+                            "payment_id": payment_id,
+                            "old_status": order_status,
+                            "new_status": "Confirmed"
+                        }));
+                    },
+        Err(e) => {
+                        log::error!("Failed to update order status: {}", e);
+                        diagnostic_info.push(json!({
+                            "type": "error",
+                            "order_id": order_id,
+                            "payment_id": payment_id,
+                            "error": format!("Database error: {}", e)
+                        }));
+                    }
+                }
+                
+                mismatched_orders += 1;
+            } else {
+                log::info!("✓ Order {} status matches payment status ({})", order_id, order_status);
+                diagnostic_info.push(json!({
+                    "type": "ok",
+                    "order_id": order_id,
+                    "payment_id": payment_id,
+                    "status": order_status
+                }));
+            }
+        }
+    }
+    
+    // Return comprehensive report
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "diagnostics": {
+            "mismatched_orders": mismatched_orders,
+            "fixed_orders": fixed_orders,
+            "missing_orders": missing_orders,
+            "details": diagnostic_info
+        }
+    }))
 }

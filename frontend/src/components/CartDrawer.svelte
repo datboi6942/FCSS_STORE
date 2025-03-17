@@ -3,11 +3,13 @@
   import { fly } from 'svelte/transition';
   import { createEventDispatcher, onMount } from 'svelte';
   import { auth } from '../stores/auth.js';
+  import ShippingFormOverlay from './ShippingFormOverlay.svelte';
   
   const dispatch = createEventDispatcher();
   export let isOpen = false;
   
-  // Initialize a local cart variable
+  // Add state for checkout process
+  let showShippingForm = false;
   let cartItems = [];
   
   // Update local cart variable when store changes
@@ -34,79 +36,47 @@
     cart.clear();
   }
   
-  async function checkout() {
-    try {
-      console.log("Starting checkout process with cart items:", $cart);
-      
-      if (!$auth || !$auth.isAuthenticated) {
-        console.warn("User not authenticated, directing to login");
-        close();
-        // Save current page for redirect back after login
-        localStorage.setItem('redirectAfterLogin', '/checkout');
-        window.location.href = '/login';
-        return;
-      }
-      
-      const checkoutData = {
-        items: $cart,
-        total: $cartTotal
-      };
-      
-      console.log("Sending checkout data:", checkoutData);
-      
-      // Include auth token
-      const headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      };
-      
-      if ($auth && $auth.token) {
-        headers['Authorization'] = `Bearer ${$auth.token}`;
-        // Save the token for the checkout page
-        localStorage.setItem('auth_token_backup', $auth.token);
-        // Also save user data
-        if ($auth.user) {
-          localStorage.setItem('auth_user_backup', JSON.stringify($auth.user));
-        }
-      }
-      
-      const response = await fetch('http://localhost:5000/api/direct-checkout', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(checkoutData)
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Server responded with ${response.status}`);
-      }
-      
-      const data = await response.json();
-      console.log("Checkout response:", data);
-      
-      if (data.success && data.payment) {
-        // Store the payment data
-        localStorage.setItem('monero_payment', JSON.stringify(data.payment));
-        localStorage.setItem('current_order_id', data.order_id);
-        
-        // Close the cart drawer
-        close();
-        
-        // Use single-page app navigation instead of full page reload
-        if (typeof window !== 'undefined' && window.location) {
-          window.location.href = '/checkout/monero';
-        }
-      } else {
-        throw new Error(data.message || 'Checkout failed');
-      }
-    } catch (error) {
-      console.error("Checkout error:", error);
-      alert(`Checkout failed: ${error.message}`);
+  function proceedToCheckout() {
+    if ($cart.length === 0) {
+      alert('Your cart is empty!');
+      return;
     }
+    
+    // Show shipping form instead of redirecting directly to checkout
+    showShippingForm = true;
+  }
+  
+  // Handle the shipping form submission
+  function handleShippingSubmit(event) {
+    const shippingData = event.detail;
+    
+    // Close the shipping form
+    showShippingForm = false;
+    
+    // Close the cart drawer
+    close();
+    
+    // Redirect to checkout with shipping info
+    const checkoutData = {
+      items: $cart,
+      total: $cartTotal,
+      shipping_info: shippingData
+    };
+    
+    // Store checkout data for the checkout page
+    localStorage.setItem('checkout_data', JSON.stringify(checkoutData));
+    
+    // Navigate to the checkout page
+    window.location.href = '/checkout/monero';
   }
 </script>
 
 {#if isOpen}
-  <div class="cart-overlay" on:click={close}>
+  <div class="cart-overlay" 
+       role="dialog" 
+       aria-modal="true"
+       on:click|self={close}
+       on:keydown={(e) => e.key === 'Escape' && close()}>
     <div 
       class="cart-drawer" 
       on:click|stopPropagation 
@@ -151,11 +121,19 @@
           </div>
           <div class="cart-actions">
             <button class="clear-btn" on:click={clearCart}>Clear Cart</button>
-            <button class="checkout-btn" on:click={checkout} disabled={$cart.length === 0}>
+            <button class="checkout-btn" on:click={proceedToCheckout} disabled={$cart.length === 0}>
               Checkout with Monero
             </button>
           </div>
         </div>
+      {/if}
+      
+      <!-- Add shipping form overlay -->
+      {#if showShippingForm}
+        <ShippingFormOverlay 
+          on:close={() => showShippingForm = false}
+          on:submit={handleShippingSubmit} 
+        />
       {/if}
     </div>
   </div>

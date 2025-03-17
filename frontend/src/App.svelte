@@ -87,7 +87,26 @@
     // Check server first to ensure it's up
     await checkServerReadiness();
     
-    // Then check authentication status
+    // Try to restore auth from storage first
+    const token = localStorage.getItem('jwt') || sessionStorage.getItem('jwt');
+    const savedUser = localStorage.getItem('user');
+    
+    if (token && savedUser) {
+      try {
+        const userData = JSON.parse(savedUser);
+        auth.update(state => ({
+          ...state,
+          isAuthenticated: true,
+          token,
+          user: userData,
+          isAdmin: userData.role === 'admin'
+        }));
+      } catch (e) {
+        console.error("Error restoring auth state:", e);
+      }
+    }
+    
+    // Then verify with backend
     const isAuthenticated = await auth.checkAuth();
     console.log("Authentication check result:", isAuthenticated);
     
@@ -348,10 +367,14 @@
       <MoneroCheckout />
     </Route>
     <Route path="*" let:location>
-      <div style="padding: 20px; border: 2px solid red;">
-        <h3>Debug: Route Not Found</h3>
-        <p>The current path is: {location.pathname}</p>
-      </div>
+      {#if location && location.pathname}
+        <div style="padding: 20px; border: 2px solid red;">
+          <h3>Debug: Route Not Found</h3>
+          <p>The current path is: {location.pathname}</p>
+        </div>
+      {:else}
+        <div class="loading">Loading...</div>
+      {/if}
     </Route>
   </div>
   

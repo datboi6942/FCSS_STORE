@@ -36,6 +36,19 @@ const createAuthStore = () => {
     
     // Login handler
     login: (userData) => {
+      console.log("Logging in with user data:", userData);
+      
+      // Store token in both localStorage and sessionStorage for redundancy
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('jwt', userData.token);
+        sessionStorage.setItem('jwt', userData.token);
+        localStorage.setItem('user', JSON.stringify({
+          id: userData.user_id || userData.id,
+          username: userData.username,
+          role: userData.role
+        }));
+      }
+      
       update(state => ({
         ...state,
         isAuthenticated: true,
@@ -47,11 +60,6 @@ const createAuthStore = () => {
         },
         isAdmin: userData.role === 'admin'
       }));
-      
-      // Store token in localStorage
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('jwt', userData.token);
-      }
     },
     
     // Logout handler
@@ -64,6 +72,7 @@ const createAuthStore = () => {
       }
       
       localStorage.removeItem('jwt');
+      sessionStorage.removeItem('jwt');
       // Only remove auth_token_backup if not in checkout flow
       if (!window.location.pathname.includes('/checkout/')) {
         localStorage.removeItem('auth_token_backup');
@@ -78,72 +87,68 @@ const createAuthStore = () => {
     
     // Check if user is authenticated and fetch profile
     checkAuth: async () => {
-      const token = localStorage.getItem('jwt') || localStorage.getItem('auth_token_backup');
+      const token = localStorage.getItem('jwt') || sessionStorage.getItem('jwt');
+      const savedUser = localStorage.getItem('user');
+      
       if (!token) {
-        console.log("No token found in localStorage");
+        console.log("No token found in storage");
         return false;
       }
       
       try {
         console.log("Checking auth with token:", token.substring(0, 10) + "...");
         
-        // First check if the token is valid using our debug endpoint
-        const tokenCheckResponse = await fetch('http://localhost:5000/orders/debug-token', {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-        
-        const tokenData = await tokenCheckResponse.json();
-        console.log("Token check result:", tokenData);
-        
-        if (!tokenCheckResponse.ok || !tokenData.success) {
-          console.error("Token is invalid:", tokenData.error);
-          throw new Error(tokenData.error || 'Invalid token');
-        }
-        
-        // If token is valid, fetch the user profile
-        const profileResponse = await fetch('http://localhost:5000/auth/profile', {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-        
-        if (!profileResponse.ok) {
-          console.error("Profile fetch failed with status:", profileResponse.status);
-          const errorText = await profileResponse.text();
-          console.error("Error response:", errorText);
-          throw new Error('Failed to fetch profile');
-        }
-        
-        const profileData = await profileResponse.json();
-        console.log("Profile data:", profileData);
-        
-        if (profileData.id) {
+        // First try to restore from saved user data
+        if (savedUser) {
+          const userData = JSON.parse(savedUser);
           update(state => ({
             ...state,
             isAuthenticated: true,
             token,
-            user: {
-              id: profileData.id,
-              username: profileData.username,
-              role: profileData.role
-            },
-            isAdmin: profileData.role === 'admin'
+            user: userData,
+            isAdmin: userData.role === 'admin'
           }));
-          return true;
-        } else {
-          throw new Error('Invalid user data');
         }
+        
+        // Verify with backend
+        const response = await fetch('http://localhost:5000/auth/profile', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error("Auth check failed:", errorText);
+          throw new Error('Invalid token');
+        }
+        
+        const data = await response.json();
+        console.log("Profile data:", data);
+        
+        // Update auth state with fresh data from server
+        update(state => ({
+          ...state,
+          isAuthenticated: true,
+          token,
+          user: {
+            id: data.id,
+            username: data.username,
+            role: data.role
+          },
+          isAdmin: data.role === 'admin'
+        }));
+        
+        return true;
       } catch (error) {
         console.error('Auth check failed:', error);
-        
-        // Don't clear tokens during checkout
-        if (!window.location.pathname.includes('/checkout/')) {
-          localStorage.removeItem('jwt');
-          localStorage.removeItem('auth_token_backup');
-          set(initialState);
-        }
+        // Clear auth state on failure
+        localStorage.removeItem('jwt');
+        sessionStorage.removeItem('jwt');
+        localStorage.removeItem('user');
+        set(initialState);
         return false;
       }
     }

@@ -1,4 +1,7 @@
 // main.rs (top portion)
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
 mod types;
 mod auth;
 mod orders;
@@ -395,42 +398,6 @@ async fn setup_database_directly(pool: &SqlitePool) -> Result<(), std::io::Error
     Ok(())
 }
 
-// Add this function to create a test admin user
-async fn create_test_admin(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    // Check if admin user already exists
-    let admin_exists = sqlx::query!(
-        "SELECT COUNT(*) as count FROM users WHERE username = ?",
-        "admin"
-    )
-    .fetch_one(pool)
-    .await?
-    .count > 0;
-
-    if !admin_exists {
-        log::info!("Creating test admin user...");
-        let admin_id = format!("usr-admin-{}", uuid::Uuid::new_v4().simple());
-        let now = chrono::Utc::now().timestamp();
-        
-        // In a real app, you would hash this password
-        sqlx::query!(
-            "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-            admin_id,
-            "admin",
-            "admin123", // DEMO ONLY - use proper password hashing in production
-            "admin",
-            now
-        )
-        .execute(pool)
-        .await?;
-        
-        log::info!("Test admin user created successfully");
-    } else {
-        log::info!("Test admin user already exists");
-    }
-    
-    Ok(())
-}
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -457,7 +424,7 @@ async fn main() -> std::io::Result<()> {
     let chat_history = Arc::new(Mutex::new(Vec::new()));
     
     // Initialize cart store
-    let carts = Mutex::new(HashMap::<String, Cart>::new());
+    let _carts = Mutex::new(HashMap::<String, Cart>::new());
     
     // Create WebSocket connections
     let ws_connections = Arc::new(Mutex::new(WebsocketConnections::new()));
@@ -480,12 +447,6 @@ async fn main() -> std::io::Result<()> {
         Err(e) => log::warn!("Error initializing database schema: {}", e),
     }
     
-    // Add auto-purge system
-    let app_state_clone = app_state.clone();
-    tokio::spawn(async move {
-        auto_purge::start_auto_purge(app_state_clone).await;
-    });
-
     // Start Monero payment checker
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {

@@ -13,7 +13,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // WebSocket session data
-struct PaymentWebsocket {
+pub struct PaymentWebsocket {
     order_id: String,
     app_state: web::Data<AppState>,
     heartbeat: Instant,
@@ -32,7 +32,7 @@ impl WebsocketConnections {
         }
     }
     
-    pub fn add_connection(&mut self, order_id: String, addr: Addr<PaymentWebsocket>) {
+    pub(crate) fn add_connection(&mut self, order_id: String, addr: Addr<PaymentWebsocket>) {
         self.connections.entry(order_id.clone())
             .or_insert_with(Vec::new)
             .push(addr);
@@ -41,7 +41,7 @@ impl WebsocketConnections {
             self.connections.get(&order_id).map(|v| v.len()).unwrap_or(0));
     }
     
-    pub fn remove_connection(&mut self, order_id: &str, addr: &Addr<PaymentWebsocket>) {
+    pub(crate) fn remove_connection(&mut self, order_id: &str, addr: &Addr<PaymentWebsocket>) {
         if let Some(conns) = self.connections.get_mut(order_id) {
             conns.retain(|a| a != addr);
             if conns.is_empty() {

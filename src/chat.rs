@@ -23,8 +23,7 @@ pub struct ChatMessage {
 
 #[derive(Deserialize)]
 pub struct ChatInput {
-    pub user: String,
-    pub text: String,
+    pub message: String,
 }
 
 // Define timeout constants
@@ -101,35 +100,6 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for ChatSession {
             _ => ctx.stop(),
         }
     }
-}
-
-// WebSocket route handler
-pub async fn chat_route(
-    req: HttpRequest,
-    stream: web::Payload,
-    app_data: web::Data<AppState>,
-) -> Result<HttpResponse, Error> {
-    // Extract username from token or query params (simplified for demo)
-    let username = req.headers()
-        .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("anonymous")
-        .trim_start_matches("Bearer ")
-        .to_string();
-    
-    info!("WebSocket connection established for user: {}", username);
-    
-    // Create session
-    let chat_session = ChatSession {
-        id: Uuid::new_v4().to_string(),
-        username,
-        chat_history: app_data.chat_history.clone(),
-        heartbeat: Instant::now(),
-    };
-    
-    // Start WebSocket connection
-    let resp = ws::start(chat_session, &req, stream)?;
-    Ok(resp)
 }
 
 // Simple endpoint to get chat history
@@ -260,7 +230,7 @@ pub async fn post_message(
     let new_message = ChatMessage {
         id: Uuid::new_v4().to_string(),
         username: username.clone(),
-        content: payload.text.clone(),
+        content: payload.message.clone(),
         timestamp: Utc::now(),
     };
     

@@ -1,10 +1,11 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { cart, cartTotal } from '../stores/cart.js';
+  import { cart, cartTotal, clearCart } from '../stores/cart.js';
   import QRCode from 'qrcode';
   import { auth } from '../stores/auth.js';
+  import { navigate } from 'svelte-routing';
   
-  export let params = {};
+  export const params = {}; // For external reference
   
   let paymentDetails = null;
   let error = null;
@@ -15,90 +16,189 @@
   let qrCodeUrl = '';
   let socket = null;
   let paymentData = null;
+  let pollingEnabled = true; // Fallback to polling if WebSocket fails
+  
+  // Define this at the top of the script tag
+  const API_BASE_URL = 'http://localhost:5000';
+  
+  // Function to go back to the cart page
+  function goToCart() {
+    navigate('/cart');
+  }
+
+  // Function to poll for payment status when WebSocket isn't available
+  function startPolling() {
+    if (checkInterval) {
+      clearInterval(checkInterval);
+    }
+    
+    checkInterval = setInterval(async () => {
+      if (!order_id || !pollingEnabled) return;
+      
+      try {
+        const response = await fetch(`${API_BASE_URL}/monero/check_payment/${order_id}`);
+        
+        // Check if the response is OK
+        if (!response.ok) {
+          // Just log the error but don't throw - this allows polling to continue
+          console.error(`Error response: ${response.status} ${response.statusText}`);
+          return;
+        }
+        
+        const text = await response.text();
+        
+        // Try to parse the response as JSON
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          console.error(`Invalid JSON response: ${text}`);
+          return;
+        }
+        
+        // Process the data
+        if (data.success && data.status) {
+          if (data.status.toLowerCase() === 'confirmed' || data.status.toLowerCase() === 'completed') {
+            orderStatus = 'confirmed';
+            clearInterval(checkInterval);
+            
+            // Make sure the order ID is properly stored before navigation
+            if (order_id) {
+              localStorage.setItem('current_order_id', order_id);
+            }
+            
+            // Clear other checkout data but keep order_id for the success page
+            localStorage.removeItem('monero_payment');
+            localStorage.removeItem('checkout_data');
+            cart.clear();
+            
+            // Redirect to success page
+            setTimeout(() => {
+              navigate('/checkout/success');
+            }, 2000);
+          }
+        }
+      } catch (err) {
+        // Log the error but don't stop polling
+        console.error("Error polling payment status:", err);
+      }
+    }, 5000); // Check every 5 seconds
+  }
+  
+  function loadOrCreatePayment() {
+    // Try to load from checkout data
+    const checkoutDataString = localStorage.getItem('checkout_data');
+    
+    if (checkoutDataString) {
+      try {
+        const checkoutData = JSON.parse(checkoutDataString);
+        
+        // Send checkout request with shipping info
+        fetch(`${API_BASE_URL}/cart/checkout`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(localStorage.getItem('jwt') ? { 'Authorization': `Bearer ${localStorage.getItem('jwt')}` } : {})
+          },
+          body: JSON.stringify(checkoutData)
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            // Set payment details and order ID
+            paymentDetails = data;
+            order_id = data.order_id;
+            paymentData = data.payment;
+            
+            // Store payment details for future reference
+            localStorage.setItem('monero_payment', JSON.stringify(data.payment));
+            localStorage.setItem('current_order_id', data.order_id);
+            
+            // Generate QR code
+            if (data.payment && data.payment.address) {
+              generateQRCode(data.payment.address, data.payment.amount);
+            }
+            
+            // Clear checkout data from storage
+            localStorage.removeItem('checkout_data');
+            
+            // Try to set up WebSocket or fall back to polling
+            setupWebSocket();
+          } else {
+            error = data.error || 'Failed to process checkout';
+          }
+          loading = false;
+        })
+        .catch(err => {
+          error = 'Network error: ' + err.message;
+          loading = false;
+        });
+        
+        return; // Exit function after initiating checkout
+      } catch (e) {
+        console.error("Error parsing checkout data:", e);
+        // Continue to fallback methods
+      }
+    }
+    
+    // Fallback: Try to load existing payment from localStorage
+    const storedPayment = localStorage.getItem('monero_payment');
+    const storedOrderId = localStorage.getItem('current_order_id');
+    
+    if (storedPayment && storedOrderId) {
+      try {
+        paymentData = JSON.parse(storedPayment);
+        order_id = storedOrderId;
+        
+        paymentDetails = {
+          success: true,
+          order_id: order_id,
+          payment: paymentData
+        };
+        
+        // Generate QR code
+        if (paymentData && paymentData.address) {
+          generateQRCode(paymentData.address, paymentData.amount);
+        }
+        
+        // Try to set up WebSocket or fall back to polling
+        setupWebSocket();
+        loading = false;
+      } catch (e) {
+        console.error("Error loading saved payment:", e);
+        error = "Failed to load saved payment data";
+        loading = false;
+      }
+      
+      return; // Exit function after successfully loading
+    }
+    
+    // If we get here, we couldn't load payment data
+    error = "No payment information found. Please return to cart.";
+    loading = false;
+  }
   
   onMount(() => {
     console.log("MoneroCheckout component mounted");
     
-    // Enhanced auth restoration with more logging
-    const tokenBackup = localStorage.getItem('auth_token_backup');
-    const userBackup = localStorage.getItem('auth_user_backup');
+    // Load or create payment
+    loadOrCreatePayment();
     
-    console.log("Token backup exists:", !!tokenBackup);
-    console.log("User backup exists:", !!userBackup);
-    console.log("Current auth state:", $auth);
-    
-    if (tokenBackup) {
-      console.log("Restoring authentication from backup token");
-      
-      // More robust auth restoration
-      let userData = null;
-      try {
-        if (userBackup) {
-          userData = JSON.parse(userBackup);
-        }
-      } catch (e) {
-        console.error("Error parsing user backup:", e);
+    return () => {
+      // Clean up
+      if (socket) {
+        socket.close();
       }
-      
-      auth.update(state => ({
-        ...state,
-        isAuthenticated: true,
-        token: tokenBackup,
-        user: userData || state.user,
-        isAdmin: userData ? userData.role === 'admin' : state.isAdmin
-      }));
-      
-      console.log("Auth state after restoration:", $auth);
-      
-      // Don't clear the token backup yet - keep it for the entire checkout process
-      // We'll clear it when the checkout is complete
-    }
-    
-    // Load payment data
-    loadPaymentData();
-    
-    // Don't clear the cart yet - let the user see what they're buying
-    // We'll clear it when the payment is confirmed
+      if (checkInterval) {
+        clearInterval(checkInterval);
+      }
+    };
   });
-  
-  function loadPaymentData() {
-    try {
-      // Get payment data from localStorage
-      const storedPayment = localStorage.getItem('monero_payment');
-      const storedOrderId = localStorage.getItem('current_order_id');
-      
-      console.log("Retrieved from localStorage - payment:", storedPayment);
-      console.log("Retrieved from localStorage - orderId:", storedOrderId);
-      
-      if (storedPayment) {
-        paymentData = JSON.parse(storedPayment);
-        
-        if (paymentData && paymentData.address) {
-          // Generate QR code for the Monero address
-          generateQRCode(paymentData.address, paymentData.amount);
-        }
-      }
-      
-      if (storedOrderId) {
-        order_id = storedOrderId;
-      }
-      
-      if (!paymentData && !order_id) {
-        error = "Payment information not found";
-      }
-    } catch (err) {
-      console.error("Error loading payment data:", err);
-      error = "Failed to load payment information";
-    } finally {
-      loading = false;
-    }
-  }
   
   async function generateQRCode(address, amount) {
     try {
       // Format: monero:<address>?tx_amount=<amount>
       const moneroUri = `monero:${address}?tx_amount=${amount}`;
-      
       qrCodeUrl = await QRCode.toDataURL(moneroUri);
     } catch (err) {
       console.error("QR code generation error:", err);
@@ -112,75 +212,72 @@
       socket.close();
     }
     
-    // Create WebSocket connection
-    socket = new WebSocket(`ws://localhost:5000/ws/payment/${order_id}`);
+    if (!order_id) {
+      console.error("Cannot setup WebSocket - no order ID");
+      startPolling(); // Fall back to polling
+      return;
+    }
     
-    socket.onopen = () => {
-      console.log(`WebSocket connected for order ${order_id}`);
-      // Request initial status
-      socket.send(JSON.stringify({
-        command: "check_status"
-      }));
-    };
-    
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        console.log("WebSocket message:", data);
-        
-        if (data.type === "payment_status") {
-          // Update payment status
-          const newStatus = data.status.toLowerCase();
-          if (newStatus === "confirmed" || newStatus === "completed") {
-            orderStatus = 'confirmed';
-            
-            // Play a sound to notify the user
-            const audio = new Audio('/payment-confirmed.mp3');
-            audio.play().catch(e => console.log("Audio play error:", e));
-            
-            // Show a notification if supported
-            if ("Notification" in window) {
-              if (Notification.permission === "granted") {
-                new Notification("Payment Confirmed!", {
-                  body: "Your payment has been confirmed and your order is being processed.",
-                  icon: "/monero-icon.png"
-                });
-              } else if (Notification.permission !== "denied") {
-                Notification.requestPermission().then(permission => {
-                  if (permission === "granted") {
-                    new Notification("Payment Confirmed!", {
-                      body: "Your payment has been confirmed and your order is being processed.",
-                      icon: "/monero-icon.png"
-                    });
-                  }
-                });
+    try {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${wsProtocol}//localhost:5000/ws/payment/${order_id}`);
+      
+      socket.onopen = () => {
+        console.log(`WebSocket connected for order ${order_id}`);
+        // Request initial status
+        socket.send(JSON.stringify({
+          command: "check_status"
+        }));
+      };
+      
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log("WebSocket message:", data);
+          
+          if (data.type === "payment_status") {
+            const newStatus = data.status.toLowerCase();
+            if (newStatus === "confirmed" || newStatus === "completed") {
+              orderStatus = 'confirmed';
+              
+              // Make sure the order ID is properly stored before navigation
+              if (order_id) {
+                localStorage.setItem('current_order_id', order_id);
               }
+              
+              // Clear other checkout data
+              localStorage.removeItem('monero_payment');
+              localStorage.removeItem('checkout_data');
+              cart.clear();
+              
+              // Redirect to success page
+              setTimeout(() => {
+                navigate('/checkout/success');
+              }, 2000);
             }
-          } else {
-            orderStatus = newStatus;
           }
+        } catch (e) {
+          console.error("Error processing WebSocket message:", e);
         }
-      } catch (e) {
-        console.error("Error processing WebSocket message:", e);
-      }
-    };
-    
-    socket.onerror = (error) => {
-      console.error("WebSocket error:", error);
-    };
-    
-    socket.onclose = () => {
-      console.log("WebSocket connection closed");
-      // Reconnect after a delay
-      setTimeout(() => {
-        if (orderStatus !== 'confirmed' && orderStatus !== 'completed') {
-          setupWebSocket();
-        }
-      }, 5000);
-    };
+      };
+      
+      socket.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        startPolling(); // Fall back to polling
+      };
+      
+      socket.onclose = () => {
+        console.log("WebSocket connection closed");
+        startPolling(); // Fall back to polling
+      };
+    } catch (e) {
+      console.error("Error setting up WebSocket:", e);
+      startPolling(); // Fall back to polling
+    }
   }
   
   onDestroy(() => {
+    // Clean up
     if (socket) {
       socket.close();
     }
@@ -188,336 +285,222 @@
       clearInterval(checkInterval);
     }
   });
-
-  // Helper to copy text to clipboard
-  function copyToClipboard(text) {
-    navigator.clipboard.writeText(text)
-      .then(() => alert('Copied to clipboard!'))
-      .catch(err => console.error('Failed to copy:', err));
-  }
   
-  // Manually check status
-  function checkStatusNow() {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        command: "check_status"
-      }));
-    }
+  function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(
+      () => {
+        alert("Copied to clipboard");
+      },
+      (err) => {
+        console.error("Could not copy: ", err);
+      }
+    );
   }
 </script>
 
-<div class="monero-checkout">
+<div class="container">
   <h1>Monero Payment</h1>
   
   {#if loading}
-    <div class="loading">Loading payment information...</div>
-  {:else if error}
-    <div class="error">
-      <p>{error}</p>
-      <button on:click={() => window.history.back()}>Go Back</button>
+    <div class="loading">
+      <p>Loading payment details...</p>
+      <div class="spinner"></div>
     </div>
-  {:else if paymentData}
-    <div class="payment-details">
-      <div class="order-summary">
-        <h2>Order Summary</h2>
-        {#each $cart as item}
-          <div class="order-item">
-            <span>{item.name} × {item.quantity}</span>
-            <span>${(item.price * item.quantity).toFixed(2)}</span>
-          </div>
-        {/each}
-        <div class="total">
-          <strong>Total:</strong>
-          <span>${$cartTotal.toFixed(2)}</span>
-        </div>
+  {:else if error}
+    <div class="error-container">
+      <p class="error">{error}</p>
+      <button class="back-btn" on:click={goToCart}>Go Back</button>
+    </div>
+  {:else if paymentDetails && paymentData}
+    {#if orderStatus === 'confirmed'}
+      <div class="success-message">
+        <h2>Payment Confirmed!</h2>
+        <p>Your order has been processed successfully.</p>
+        <p>You will be redirected to the success page...</p>
       </div>
-      
-      <div class="payment-info">
-        <h2>Payment Information</h2>
-        <div class="qr-code">
-          {#if qrCodeUrl}
-            <img src={qrCodeUrl} alt="Monero QR Code" />
-          {:else}
-            <div class="qr-placeholder">QR Code Unavailable</div>
-          {/if}
+    {:else}
+      <div class="payment-details">
+        <div class="order-info">
+          <p><strong>Order ID:</strong> {order_id}</p>
+          <p><strong>Amount:</strong> {paymentData.amount} XMR</p>
+          <p><strong>Status:</strong> Awaiting Payment</p>
         </div>
         
-        <div class="payment-details">
-          <div class="detail-row">
-            <span>Order ID:</span>
-            <code>{order_id}</code>
-            <button class="copy-btn" on:click={() => copyToClipboard(order_id)}>Copy</button>
-          </div>
+        <div class="payment-instructions">
+          <h2>Payment Instructions</h2>
+          <p>Please send exactly <strong>{paymentData.amount} XMR</strong> to the following address:</p>
           
-          <div class="detail-row">
-            <span>Amount:</span>
-            <code>{paymentData.amount} XMR</code>
-            <button class="copy-btn" on:click={() => copyToClipboard(paymentData.amount.toFixed(12))}>Copy</button>
-          </div>
-          
-          <div class="detail-row">
-            <span>Address:</span>
-            <code class="monero-address">{paymentData.address}</code>
+          <div class="address-container">
+            <div class="monero-address">{paymentData.address}</div>
             <button class="copy-btn" on:click={() => copyToClipboard(paymentData.address)}>Copy</button>
           </div>
-        </div>
-        
-        <div class="status-indicator status-{orderStatus}">
-          <h3>Payment Status: <span class="status-label">{orderStatus}</span></h3>
           
-          {#if orderStatus === 'pending'}
-            <p>Please send the exact amount to the address above. The payment will be automatically detected.</p>
-            <button class="check-btn" on:click={checkStatusNow}>Check Payment Status</button>
-          {:else if orderStatus === 'confirmed' || orderStatus === 'completed'}
-            <div class="confirmed-message">
-              <span class="checkmark">✓</span>
-              <p>Your payment has been confirmed! Your order will be processed shortly.</p>
-              <button class="order-btn" on:click={() => window.location.href = '/orders'}>View Order</button>
+          {#if qrCodeUrl}
+            <div class="qr-container">
+              <h3>Scan with Monero Wallet</h3>
+              <img src={qrCodeUrl} alt="Payment QR Code" class="qr-code" />
             </div>
           {/if}
+          
+          <div class="payment-notice">
+            <p><strong>Important:</strong> This page will automatically update when your payment is confirmed.</p>
+            <p>Please keep this page open until the payment is confirmed.</p>
+          </div>
         </div>
       </div>
+    {/if}
+  {:else}
+    <div class="error-container">
+      <p class="error">Error: Could not load payment details</p>
+      <button class="back-btn" on:click={goToCart}>Return to Cart</button>
     </div>
   {/if}
 </div>
 
 <style>
-  .monero-checkout {
+  .container {
     max-width: 800px;
-    margin: 0 auto;
-    padding: 20px;
+    margin: 2rem auto;
+    padding: 2rem;
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
   }
   
   h1 {
     text-align: center;
-    margin-bottom: 30px;
-    color: #4a4a4a;
-  }
-  
-  h2 {
-    color: #2a2a2a;
-    margin-bottom: 15px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid #eee;
+    color: #333;
+    margin-bottom: 2rem;
   }
   
   .loading {
     text-align: center;
-    padding: 50px;
-    font-size: 18px;
-    color: #666;
+    padding: 2rem;
+  }
+  
+  .spinner {
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-radius: 50%;
+    border-top: 4px solid #3498db;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 1rem auto;
+  }
+  
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  
+  .error-container {
+    text-align: center;
+    padding: 2rem;
   }
   
   .error {
-    background-color: #fff8f8;
-    border-left: 4px solid #ff6b6b;
-    padding: 20px;
-    margin: 20px 0;
-    border-radius: 4px;
+    color: #e74c3c;
+    font-weight: bold;
+    margin-bottom: 1.5rem;
   }
   
-  .error button {
-    background-color: #4a4a4a;
+  .back-btn {
+    padding: 0.75rem 1.5rem;
+    background-color: #3498db;
     color: white;
     border: none;
-    padding: 10px 15px;
     border-radius: 4px;
     cursor: pointer;
-    margin-top: 15px;
+    font-size: 1rem;
   }
   
   .payment-details {
     display: flex;
     flex-direction: column;
-    gap: 30px;
+    gap: 2rem;
   }
   
-  .order-summary {
-    background-color: #f9f9f9;
-    padding: 20px;
+  .order-info {
+    background-color: #f8f9fa;
+    padding: 1.5rem;
     border-radius: 8px;
+    border-left: 4px solid #3498db;
   }
   
-  .order-item {
-    display: flex;
-    justify-content: space-between;
-    padding: 10px 0;
-    border-bottom: 1px dashed #eee;
-  }
-  
-  .total {
-    display: flex;
-    justify-content: space-between;
-    padding: 15px 0 5px;
-    font-size: 1.1em;
-  }
-  
-  .payment-info {
-    background-color: #f0f0f0;
-    padding: 25px;
-    border-radius: 8px;
+  .payment-instructions {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 1.5rem;
   }
   
-  .qr-code {
-    display: flex;
-    justify-content: center;
-    margin-bottom: 20px;
-  }
-  
-  .qr-code img {
-    max-width: 200px;
-    border: 10px solid white;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-  }
-  
-  .detail-row {
+  .address-container {
     display: flex;
     align-items: center;
-    margin-bottom: 15px;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-  
-  .detail-row span {
-    font-weight: bold;
-    min-width: 80px;
-  }
-  
-  .detail-row code {
-    background-color: #f8f8f8;
-    padding: 8px;
+    background-color: #f8f9fa;
+    padding: 1rem;
     border-radius: 4px;
-    border: 1px solid #e0e0e0;
-    font-family: monospace;
-    flex: 1;
-    word-break: break-all;
+    margin-top: 0.5rem;
   }
   
   .monero-address {
-    font-size: 0.85em;
+    flex: 1;
+    word-break: break-all;
+    font-family: monospace;
+    font-size: 0.9rem;
   }
   
   .copy-btn {
-    background-color: #4a4a4a;
-    color: white;
-    border: none;
-    padding: 6px 10px;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-  
-  .copy-btn:hover {
-    background-color: #333;
-  }
-  
-  .status-indicator {
-    background-color: #fff;
-    padding: 20px;
-    border-radius: 8px;
-    margin-top: 20px;
-    position: relative;
-    transition: all 0.3s ease;
-  }
-  
-  .status-pending {
-    border-left: 4px solid #f39c12;
-  }
-  
-  .status-confirmed, .status-completed {
-    border-left: 4px solid #2ecc71;
-    background-color: #f0fff4;
-  }
-  
-  .status-label {
-    text-transform: capitalize;
-    font-weight: bold;
-  }
-  
-  .confirmed-message {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-  }
-  
-  .checkmark {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 50px;
-    height: 50px;
-    background-color: #2ecc71;
-    color: white;
-    border-radius: 50%;
-    font-size: 24px;
-    margin-bottom: 15px;
-    animation: pulse 2s infinite;
-  }
-  
-  @keyframes pulse {
-    0% {
-      box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.4);
-    }
-    70% {
-      box-shadow: 0 0 0 15px rgba(46, 204, 113, 0);
-    }
-    100% {
-      box-shadow: 0 0 0 0 rgba(46, 204, 113, 0);
-    }
-  }
-  
-  .check-btn, .order-btn {
     background-color: #3498db;
     color: white;
     border: none;
-    padding: 12px 20px;
+    padding: 0.5rem 1rem;
     border-radius: 4px;
     cursor: pointer;
-    font-weight: bold;
-    margin-top: 15px;
-    transition: background-color 0.2s;
+    margin-left: 1rem;
   }
   
-  .check-btn:hover {
-    background-color: #2980b9;
-  }
-  
-  .order-btn {
-    background-color: #2ecc71;
-  }
-  
-  .order-btn:hover {
-    background-color: #27ae60;
-  }
-  
-  .qr-placeholder {
-    width: 200px;
-    height: 200px;
-    background-color: #eee;
+  .qr-container {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    color: #666;
-    border-radius: 8px;
+    margin: 1.5rem 0;
   }
   
-  @media (max-width: 600px) {
-    .detail-row {
-      flex-direction: column;
-      align-items: flex-start;
+  .qr-code {
+    max-width: 200px;
+    margin-top: 1rem;
+  }
+  
+  .payment-notice {
+    background-color: #fff3e0;
+    padding: 1rem;
+    border-radius: 4px;
+    border-left: 4px solid #ff9800;
+  }
+  
+  .success-message {
+    text-align: center;
+    background-color: #e8f5e9;
+    padding: 2rem;
+    border-radius: 8px;
+    border-left: 4px solid #4caf50;
+  }
+  
+  @media (max-width: 768px) {
+    .container {
+      padding: 1rem;
+      margin: 1rem;
     }
     
-    .detail-row code {
-      width: 100%;
-      margin: 5px 0;
+    .address-container {
+      flex-direction: column;
+      align-items: stretch;
     }
     
     .copy-btn {
-      align-self: flex-end;
+      margin-left: 0;
+      margin-top: 0.5rem;
+      width: 100%;
     }
   }
 </style> 

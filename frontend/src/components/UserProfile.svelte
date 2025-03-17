@@ -84,52 +84,34 @@
   }
   
   async function fetchUserOrders() {
+    console.log("Fetching orders for user profile");
     try {
-      console.log("Fetching orders for user profile");
-      if (!$auth || !$auth.token) {
-        console.error("No authentication token available");
-        orders = [];
-        return;
-      }
+      console.log("Fetching user orders with token:", $auth.token.slice(0, 10) + "...");
+      console.log("User ID:", $auth.user?.id);
       
-      console.log("Fetching user orders with token:", $auth.token.substring(0, 10) + "...");
-      console.log("User ID:", $auth.user ? $auth.user.id : "Unknown");
-      
-      const response = await fetch('http://localhost:5000/orders/my-orders', {
+      const response = await fetch("http://localhost:5000/orders/my-orders", {
         headers: {
-          'Authorization': `Bearer ${$auth.token}`
+          "Authorization": `Bearer ${$auth.token}`
         }
       });
       
       console.log("Profile orders response status:", response.status);
       
       if (!response.ok) {
-        // If 404, it just means no orders yet
-        if (response.status === 404) {
-          console.log("No orders found for profile (404)");
-          orders = [];
-          return;
-        }
-        const text = await response.text();
-        console.error("Error response:", text);
-        throw new Error(`Failed to fetch orders: ${response.status} ${text}`);
-      }
-      
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        console.error("Response is not JSON:", await response.text());
-        throw new Error("Invalid response format");
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
       
       const data = await response.json();
       console.log("Profile orders data:", data);
       
-      orders = data.success && data.orders ? data.orders : [];
-      
-      console.log(`Fetched ${orders.length} orders for profile:`, orders);
-    } catch (err) {
-      console.error('Error fetching orders for profile:', err);
-      orders = [];
+      if (data.success) {
+        console.log(`Fetched ${data.count} orders for profile:`, data.orders);
+        orders = data.orders;
+      } else {
+        console.error("Error fetching orders:", data.error);
+      }
+    } catch (error) {
+      console.error("Error fetching user orders:", error);
     }
   }
   
@@ -224,9 +206,8 @@
   }
   
   function formatDate(timestamp) {
-    if (!timestamp) return 'N/A';
     const date = new Date(timestamp * 1000);
-    return date.toLocaleString();
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
   }
   
   function getStatusClass(status) {
@@ -245,6 +226,388 @@
   // Add this function to redirect to order status page
   function viewOrderStatus(orderId) {
     navigate(`/orders?id=${orderId}`);
+  }
+  
+  // Add the copy function if it doesn't exist already
+  function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(
+      () => {
+        alert('Address copied to clipboard');
+      },
+      (err) => {
+        console.error('Could not copy text: ', err);
+      }
+    );
+  }
+  
+  async function refreshOrders() {
+    console.log("Manual refresh triggered in UserProfile");
+    
+    try {
+      const response = await fetch("http://localhost:5000/orders/my-orders", {
+        headers: {
+          "Authorization": `Bearer ${$auth.token}`
+        },
+        cache: "no-cache" // Add this to prevent caching
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        console.log("⚡ Orders refreshed in profile:", data.orders);
+        orders = data.orders; // Update the orders
+      } else {
+        console.error("Failed to refresh orders in profile:", data.error);
+      }
+    } catch (error) {
+      console.error("Error refreshing orders in profile:", error);
+    }
+  }
+  
+  async function checkPaymentStatus(paymentId) {
+    if (!paymentId) {
+      console.error("No payment ID available for this order");
+      
+      // Try to run the diagnostic fix instead
+      await runDiagnosticFix();
+      return;
+    }
+    
+    try {
+      const response = await fetch(`http://localhost:5000/monero/api/monero/check_now/${paymentId}`, {
+        method: 'POST',
+        headers: {
+          "Authorization": `Bearer ${$auth.token}`
+        }
+      });
+      
+      const data = await response.json();
+      console.log("Payment check result:", data);
+      
+      if (data.success) {
+        // Immediately refresh orders to show updated status
+        await refreshOrders();
+      }
+    } catch (error) {
+      console.error("Error checking payment status:", error);
+    }
+  }
+  
+  // Set up auto-refresh when component mounts
+  onMount(() => {
+    // Existing code...
+    
+    // Set up an interval to refresh orders every 10 seconds
+    const orderRefreshInterval = setInterval(refreshOrders, 10000);
+    
+    return () => {
+      // Clean up intervals when component is destroyed
+      clearInterval(orderRefreshInterval);
+      // Other cleanup...
+    };
+  });
+  
+  async function forceFixOrderStatus(orderId) {
+    if (!confirm('This will force the order status to match its payment status. Continue?')) {
+      return;
+    }
+    
+    try {
+      // First dump the order data to see what's wrong
+      const debugResponse = await fetch(`http://localhost:5000/orders/debug/dump-order/${orderId}`, {
+        headers: {
+          "Authorization": `Bearer ${$auth.token}`
+        }
+      });
+      
+      const debugData = await debugResponse.json();
+      console.log("DEBUG - Order raw data:", debugData);
+      
+      // Now force update the status
+      const response = await fetch(`http://localhost:5000/orders/admin/force-update-order/${orderId}/Confirmed`, {
+        method: 'POST',
+        headers: {
+          "Authorization": `Bearer ${$auth.token}`
+        }
+      });
+      
+      const data = await response.json();
+      console.log("Force update result:", data);
+      
+      // Immediately refresh
+      setTimeout(refreshOrders, 500);
+      
+      alert('Order status has been fixed!');
+    } catch (error) {
+      console.error("Error fixing order status:", error);
+      alert('Failed to fix the order status: ' + error.message);
+    }
+  }
+  
+  // Add this function to your script section
+  async function dumpDebugInfo() {
+    try {
+      console.log("============ DEBUG INFO ============");
+      console.log("Current orders in UserProfile:", orders);
+      
+      // Try to get more detailed info from backend
+      if (orders.length > 0) {
+        const firstOrderId = orders[0].id;
+        console.log(`Fetching detailed info for order: ${firstOrderId}`);
+        
+        const response = await fetch(`http://localhost:5000/orders/debug/dump-order/${firstOrderId}`, {
+          headers: {
+            "Authorization": `Bearer ${$auth.token}`
+          }
+        });
+        
+        const data = await response.json();
+        console.log("Raw order data from backend:", data);
+        
+        // Check payment links
+        if (data.payment_id) {
+          console.log(`Order has payment_id: ${data.payment_id}`);
+        } else {
+          console.log("⚠️ Order has NO payment_id!");
+        }
+        
+        if (orders[0].payment_id) {
+          console.log(`Frontend knows payment_id: ${orders[0].payment_id}`);
+        } else {
+          console.log("⚠️ Frontend does NOT have payment_id!");
+          
+          // Attempt to fix by querying monero_payments
+          console.log("Attempting to find a matching payment for this order...");
+          const fixResponse = await fetch(`http://localhost:5000/orders/fix-order-status-mismatch`, {
+            method: 'POST',
+            headers: {
+              "Authorization": `Bearer ${$auth.token}`
+            }
+          });
+          
+          const fixData = await fixResponse.json();
+          console.log("Fix attempt result:", fixData);
+        }
+      }
+      console.log("===================================");
+    } catch (error) {
+      console.error("Error dumping debug info:", error);
+    }
+  }
+  
+  async function runDiagnosticFix() {
+    if (!confirm('This will analyze all orders and payments and fix any mismatched statuses. Continue?')) {
+      return;
+    }
+    
+    try {
+      console.log("Running global diagnostic fix...");
+      const response = await fetch('http://localhost:5000/orders/fix-order-status-mismatch', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${$auth.token}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log("Diagnostic results:", data);
+      
+      // Show detailed results
+      let message = `Diagnostic complete!\n\n` +
+                   `- Found ${data.diagnostics.mismatched_orders} mismatched orders\n` +
+                   `- Fixed ${data.diagnostics.fixed_orders} orders\n` +
+                   `- Found ${data.diagnostics.missing_orders} payments without orders\n\n` +
+                   `See console for full details.`;
+                   
+      alert(message);
+      
+      // Refresh the orders list
+      setTimeout(refreshOrders, 500);
+    } catch (error) {
+      console.error("Error running diagnostic:", error);
+      alert("Error running diagnostic: " + error.message);
+    }
+  }
+  
+  // Add this function to your script
+  async function fixOrphanedPayments() {
+    try {
+      console.log("Fixing orphaned payments...");
+      const response = await fetch('http://localhost:5000/monero/fix-orphaned-payments', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${$auth.token}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log("Fix orphaned payments result:", data);
+      
+      if (data.fixed_count > 0) {
+        alert(`Fixed ${data.fixed_count} payment link(s)! Your orders should now show the correct status.`);
+      } else {
+        alert("No orphaned payments found to fix.");
+      }
+      
+      // Refresh orders to see the changes
+      setTimeout(refreshOrders, 500);
+      
+    } catch (error) {
+      console.error("Error fixing orphaned payments:", error);
+      alert("Error fixing payment links: " + error.message);
+    }
+  }
+  
+  // Add this function to your debug section
+  async function directlyFixMyOrders() {
+    try {
+      if (orders.length === 0) {
+        alert("No orders to fix");
+        return;
+      }
+      
+      console.log("Attempting direct order fixes");
+      
+      // First, get all payment data for debugging
+      const paymentResponse = await fetch('http://localhost:5000/monero/debug/dump-all-payments', {
+        headers: {
+          'Authorization': `Bearer ${$auth.token}`
+        }
+      });
+      
+      const paymentData = await paymentResponse.json();
+      console.log("All payment records:", paymentData);
+      
+      // Fix the access to match the API response structure
+      const dbPayments = paymentData.db_payments || [];
+      const memoryPayments = paymentData.memory_payments || [];
+      
+      let fixedCount = 0;
+      
+      // For each order, try to find a matching payment
+      for (const order of orders) {
+        console.log(`Checking order ${order.id}`);
+        
+        // Try matching from both sources of payments
+        const matchingDbPayment = dbPayments.find(p => 
+          p.payment_id === order.id || 
+          p.order_id === order.id
+        );
+        
+        const matchingMemoryPayment = memoryPayments.find(p => 
+          p.payment_id === order.id || 
+          p.order_id === order.id
+        );
+        
+        const matchingPayment = matchingDbPayment || matchingMemoryPayment;
+        
+        if (matchingPayment) {
+          console.log(`Found matching payment for order ${order.id}:`, matchingPayment);
+          
+          // Update the order status directly
+          const updateResponse = await fetch(`http://localhost:5000/orders/admin/force-update-order/${order.id}/Confirmed`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${$auth.token}`
+            }
+          });
+          
+          const updateResult = await updateResponse.json();
+          console.log(`Order ${order.id} update result:`, updateResult);
+          
+          if (updateResult.success) {
+            fixedCount++;
+          }
+        } else {
+          console.log(`No matching payment found for order ${order.id}`);
+        }
+      }
+      
+      if (fixedCount > 0) {
+        alert(`Fixed ${fixedCount} orders directly!`);
+        setTimeout(refreshOrders, 500);
+      } else {
+        alert("Couldn't find any payments to match with your orders.");
+      }
+    } catch (error) {
+      console.error("Error performing direct fix:", error);
+      alert("Error: " + error.message);
+    }
+  }
+  
+  // Add this function to your debug section
+  async function forceCreatePaymentLinks() {
+    try {
+      console.log("Force creating payment links...");
+      const response = await fetch('http://localhost:5000/monero/admin/force-create-payment-links', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${$auth.token}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log("Force create payment links result:", data);
+      
+      if (data.fixed_count > 0) {
+        alert(`Created ${data.fixed_count} payment link(s)! Your orders should now have payment IDs.`);
+      } else {
+        alert("No orders without payment links found.");
+      }
+      
+      // Refresh orders to see the changes
+      setTimeout(refreshOrders, 500);
+      
+    } catch (error) {
+      console.error("Error creating payment links:", error);
+      alert("Error creating payment links: " + error.message);
+    }
+  }
+  
+  // Add this function to your script section
+  async function forceConfirmOrder(orderId) {
+    try {
+      console.log(`Force confirming order ${orderId}`);
+      const response = await fetch(`http://localhost:5000/monero/force-update-order-status/${orderId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${$auth.token}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log("Force confirm result:", data);
+      
+      if (data.success) {
+        alert("Order status has been manually confirmed!");
+        setTimeout(refreshOrders, 500);
+      } else {
+        alert("Failed to update order status: " + (data.error || "Unknown error"));
+      }
+    } catch (error) {
+      console.error("Error forcing order confirmation:", error);
+      alert("Error: " + error.message);
+    }
   }
 </script>
 
@@ -460,53 +823,100 @@
       <!-- Orders Tab -->
       {#if activeTab === 'orders'}
         <div class="orders-section">
-          <h2>My Orders</h2>
-          
+          <h3>Your Orders</h3>
+          <div class="order-controls">
+            <button class="refresh-btn" on:click={refreshOrders}>🔄 Refresh Orders</button>
+        </div>
+        
           {#if orders.length === 0}
-            <div class="no-orders">
-              <p>You don't have any orders yet.</p>
-            </div>
+            <p class="no-orders">You don't have any orders yet.</p>
           {:else}
-            <div class="orders-list">
-              {#each orders as order}
-                <div class="order-card">
-                  <div class="order-header">
-                    <span class="order-id">Order #{order.id}</span>
-                    <span class="order-date">{formatDate(order.created_at)}</span>
-                  </div>
+            <!-- Loop through orders -->
+            {#each orders as order}
+              <div class="order-item" class:confirmed={order.status === 'Confirmed' || order.status === 'Completed' || 
+                order.payment_status === 'Confirmed' || order.payment_status === 'completed' ||
+                order.payment_status === 'confirmed'}>
+                <div class="order-header">
+                  <h4>Order #{order.id}</h4>
+                  <span class="order-date">{formatDate(order.created_at)}</span>
+                </div>
+                <div class="order-details">
+                  <p>
+                    <strong>Status:</strong> 
+                    {#if order.status === 'Confirmed' || order.status === 'Completed' || 
+                        order.payment_status === 'Confirmed' || order.payment_status === 'completed' ||
+                        order.payment_status === 'confirmed'}
+                      <span class="status confirmed">Payment Received</span>
+                    {:else if order.status === 'Pending'}
+                      <span class="status pending">Awaiting Payment</span>
+                    {:else}
+                      <span class="status">{order.status}</span>
+                    {/if}
+                  </p>
+                  <p><strong>Total:</strong> ${order.total_amount.toFixed(2)}</p>
                   
-                  <div class="order-details">
-                    <div class="detail-row">
-                      <span class="detail-label">Status:</span>
-                      <span class="detail-value status-badge {getStatusClass(order.status)}">
-                        {order.status}
-                      </span>
-        </div>
-        
-        <div class="detail-row">
-                      <span class="detail-label">Total:</span>
-                      <span class="detail-value">${order.total_amount ? order.total_amount.toFixed(2) : '0.00'}</span>
-        </div>
-        
-        <div class="detail-row">
-                      <span class="detail-label">Payment Method:</span>
-                      <span class="detail-value">{order.payment_id ? 'Monero (XMR)' : 'Unknown'}</span>
+                  <!-- Add Monero address display -->
+                  {#if order.monero_address}
+                    <div class="payment-info">
+                      <p><strong>Monero Address:</strong></p>
+                      <div class="address-container">
+                        <code class="monero-address">{order.monero_address}</code>
+                        <button class="copy-btn" on:click={() => copyToClipboard(order.monero_address)}>
+                          Copy
+                        </button>
         </div>
       </div>
-      
-                  <div class="order-actions">
-                    <button class="view-order-btn" on:click={() => viewOrderStatus(order.id)}>
-                      View Status
+                  {/if}
+                  
+                  <!-- Add debug info -->
+                  <p class="debug-info">
+                    <small>Debug Info: Order Status: {order.status}, Payment Status: {order.payment_status || 'N/A'}</small>
+                  </p>
+                  
+                  <!-- Add check payment button for pending orders -->
+                  {#if order.status === 'Pending'}
+                    <div class="order-actions">
+                      <button class="check-btn" on:click={() => checkPaymentStatus(order.payment_id)}>
+                        Check Payment Status
+        </button>
+                    </div>
+                  {/if}
+                  
+                  <!-- Add emergency fix button -->
+                  {#if order.status === 'Pending' && (order.payment_status === 'Confirmed' || order.payment_status === 'confirmed')}
+                    <div class="order-actions">
+                      <button class="emergency-btn" on:click={() => forceFixOrderStatus(order.id)}>
+                        🛠️ Fix Status Mismatch
         </button>
       </div>
+                  {/if}
+                  
+                  <!-- Add new button to force confirm order -->
+                  {#if order.status === 'Pending'}
+                    <div class="order-actions">
+                      <button class="emergency-btn" on:click={() => forceConfirmOrder(order.id)}>
+                        🛠️ Force Confirm Order
+                      </button>
+                    </div>
+                  {/if}
                 </div>
-              {/each}
-            </div>
+              </div>
+            {/each}
           {/if}
         </div>
       {/if}
     </div>
   {/if}
+</div>
+
+<!-- Add the debug section here, outside the script tag -->
+<div class="debug-section">
+  <button class="debug-btn" on:click={dumpDebugInfo}>Show Order Debug Info</button>
+  <div class="emergency-controls">
+    <button class="emergency-btn" on:click={fixOrphanedPayments}>🔄 Fix Missing Payment Links</button>
+  </div>
+  <button class="emergency-btn" on:click={directlyFixMyOrders}>🛠️ Direct Order Status Fix</button>
+  <button class="emergency-btn" on:click={forceCreatePaymentLinks}>🔄 Force Create Payment Links</button>
 </div>
 
 <style>
@@ -765,17 +1175,16 @@
     color: #666;
   }
   
-  .orders-list {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
+  .orders-section {
+    margin-bottom: 30px;
   }
   
-  .order-card {
+  .order-item {
     background-color: white;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     padding: 20px;
+    margin-bottom: 20px;
   }
   
   .order-header {
@@ -795,70 +1204,140 @@
     color: #666;
   }
   
-  .detail-row {
+  .order-details {
+    margin-top: 1rem;
+  }
+  
+  .status {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+  }
+  
+  .status.confirmed {
+    background-color: #4CAF50;
+    color: white;
+  }
+  
+  .status.pending {
+    background-color: #FF9800;
+    color: white;
+  }
+  
+  .payment-info {
+    margin-top: 1rem;
+    background-color: #f8f9fa;
+    padding: 1rem;
+    border-radius: 4px;
+    border-left: 3px solid #6610f2;
+  }
+  
+  .address-container {
     display: flex;
-    margin-bottom: 8px;
+    align-items: center;
+    margin-top: 0.5rem;
   }
   
-  .detail-label {
-    width: 150px;
-    font-weight: 500;
-    color: #666;
-  }
-  
-  .detail-value {
+  .monero-address {
+    background-color: #eee;
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9rem;
+    word-break: break-all;
     flex: 1;
   }
   
-  .status-badge {
-    display: inline-block;
-    padding: 5px 10px;
-    border-radius: 20px;
-    font-size: 0.9em;
+  .copy-btn {
+    margin-left: 0.5rem;
+    background-color: #6610f2;
+    color: white;
+    border: none;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
   }
   
-  .status-pending {
-    background-color: #fff3cd;
-    color: #856404;
+  .order-item.confirmed {
+    border-left: 4px solid #4CAF50;
   }
   
-  .status-processing {
-    background-color: #d1ecf1;
-    color: #0c5460;
+  .debug-info {
+    margin-top: 1rem;
+    font-size: 0.8rem;
+    color: #999;
   }
   
-  .status-shipped {
-    background-color: #d4edda;
-    color: #155724;
-  }
-  
-  .status-delivered {
-    background-color: #cce5ff;
-    color: #004085;
-  }
-  
-  .status-cancelled {
-    background-color: #f8d7da;
-    color: #721c24;
-  }
-  
-  .status-unknown {
-    background-color: #e9ecef;
-    color: #495057;
-  }
-  
-  .order-actions {
-    margin-top: 20px;
+  .order-controls {
+    margin-bottom: 1rem;
     display: flex;
     justify-content: flex-end;
   }
   
-  .view-order-btn {
-    display: inline-block;
+  .refresh-btn {
     background-color: #2196F3;
     color: white;
-    padding: 8px 15px;
-    text-decoration: none;
+    border: none;
+    padding: 0.5rem 1rem;
     border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  
+  .refresh-btn:hover {
+    background-color: #0b7dda;
+  }
+  
+  .check-btn {
+    background-color: #FF9800;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 1rem;
+  }
+  
+  .check-btn:hover {
+    background-color: #e68a00;
+  }
+  
+  .emergency-btn {
+    background-color: #ff5722;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  
+  .emergency-btn:hover {
+    background-color: #e64a19;
+  }
+  
+  .debug-section {
+    margin-top: 2rem;
+    border-top: 1px dashed #ccc;
+    padding-top: 1rem;
+  }
+  
+  .debug-btn {
+    background-color: #333;
+    color: #00ff00;
+    border: 1px solid #00ff00;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  
+  .debug-btn:hover {
+    background-color: #444;
   }
 </style> 

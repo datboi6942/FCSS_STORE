@@ -1,6 +1,6 @@
 // src/auth.rs
 use serde_json::json;
-use actix_web::{web, HttpResponse, Responder, HttpRequest, http::header};
+use actix_web::{web, HttpResponse, Responder, HttpRequest, http::header, get};
 use serde::{Deserialize, Serialize};
 use chrono::{Utc, Duration};
 use uuid::Uuid;
@@ -15,8 +15,6 @@ use jsonwebtoken::{encode, Header, EncodingKey};
 pub struct User {
     pub id: String,
     pub username: String,
-    #[serde(skip_serializing)]
-    pub password_hash: String,
     pub role: String,
     #[serde(with = "chrono::serde::ts_seconds_option")]
     pub created_at: Option<chrono::DateTime<Utc>>,
@@ -43,7 +41,7 @@ pub struct UserResponse {
 }
 
 // Secret key for JWT tokens - in production, use environment variables
-const JWT_SECRET: &[u8] = b"secure_jwt_secret_key";
+pub const JWT_SECRET: &[u8] = b"secure_jwt_secret_key";
 const TOKEN_EXPIRY_HOURS: i64 = 24;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,8 +49,8 @@ pub struct Claims {
     pub sub: String,        // Subject (user ID)
     pub username: String,   // Username
     pub role: String,       // User role
-    pub exp: i64,           // Expiration time (UTC timestamp)
-    pub iat: i64,           // Issued at (UTC timestamp)
+    pub exp: usize,        // Expiration time (UTC timestamp)
+    pub iat: usize,        // Issued at (UTC timestamp)
 }
 
 pub async fn register(
@@ -123,27 +121,29 @@ pub async fn register(
                 sub: user_id.clone(),
                 username: user.username.clone(),
                 role: "user".to_string(),
-                exp: (Utc::now() + Duration::hours(TOKEN_EXPIRY_HOURS)).timestamp(),
-                iat: Utc::now().timestamp(),
+                exp: (Utc::now() + Duration::hours(TOKEN_EXPIRY_HOURS)).timestamp() as usize,
+                iat: Utc::now().timestamp() as usize,
             };
             
-            match encode(&Header::default(), &claims, &EncodingKey::from_secret(JWT_SECRET)) {
+            match encode(
+                &Header::default(),
+                &claims,
+                &EncodingKey::from_secret(JWT_SECRET)
+            ) {
                 Ok(token) => {
                     info!("JWT token generated for user: {}", user.username);
-                    HttpResponse::Created().json(
-                        serde_json::json!({
-                            "user_id": user_id,
-                            "username": user.username,
-                            "token": token,
-                            "role": "user"
-                        })
-                    )
-                }
+                    HttpResponse::Created().json(json!({
+                        "user_id": user_id,
+                        "username": user.username,
+                        "token": token,
+                        "role": "user"
+                    }))
+                },
                 Err(e) => {
                     error!("Failed to generate token: {}", e);
-                    HttpResponse::InternalServerError().json(
-                        serde_json::json!({"error": "Failed to generate authentication token"})
-                    )
+                    HttpResponse::InternalServerError().json(json!({
+                        "error": "Failed to generate authentication token"
+                    }))
                 }
             }
         }
@@ -194,13 +194,17 @@ pub async fn login(user: web::Json<UserLogin>, data: web::Data<AppState>) -> imp
                         sub: user.id.clone(),
                         username: user.username.clone(),
                         role: user.role.clone(),
-                        exp: (Utc::now() + Duration::hours(TOKEN_EXPIRY_HOURS)).timestamp(),
-                        iat: Utc::now().timestamp(),
+                        exp: (Utc::now() + Duration::hours(TOKEN_EXPIRY_HOURS)).timestamp() as usize,
+                        iat: Utc::now().timestamp() as usize,
                     };
                     
-                    match encode(&Header::default(), &claims, &EncodingKey::from_secret(JWT_SECRET)) {
+                    match encode(
+                        &Header::default(),
+                        &claims,
+                        &EncodingKey::from_secret(JWT_SECRET)
+                    ) {
                         Ok(token) => {
-                            HttpResponse::Ok().json(serde_json::json!({
+                            HttpResponse::Ok().json(json!({
                                 "token": token,
                                 "user_id": user.id,
                                 "username": user.username,
@@ -209,7 +213,7 @@ pub async fn login(user: web::Json<UserLogin>, data: web::Data<AppState>) -> imp
                         },
                         Err(e) => {
                             error!("Failed to generate JWT token: {}", e);
-                            HttpResponse::InternalServerError().json(serde_json::json!({
+                            HttpResponse::InternalServerError().json(json!({
                                 "error": "Authentication error"
                             }))
                         }
@@ -274,63 +278,6 @@ pub async fn refresh_token(req: HttpRequest) -> impl Responder {
     HttpResponse::Unauthorized().json(serde_json::json!({"error": "Authorization header missing"}))
 }
 
-pub async fn get_user_profile(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
-    // Check authorization
-    if let Some(auth_header) = req.headers().get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                // Special check for admin token pattern
-                if token.starts_with("admin-token-") {
-                    return HttpResponse::Ok().json(json!({
-                        "id": "admin-user",
-                        "username": "admin",
-                        "role": "admin",
-                        "created_at": Utc::now().timestamp()
-                    }));
-                }
-                
-                // Handle JWT tokens
-                match validate_token(req.clone()) {
-                    Ok(claims) => {
-                        // Get user details from database
-                        match sqlx::query!(
-                            "SELECT id, username, role, created_at FROM users WHERE id = ?",
-                            claims.sub
-                        )
-                        .fetch_optional(&data.db)
-                        .await {
-                            Ok(Some(user)) => {
-                                return HttpResponse::Ok().json(json!({
-                                    "id": user.id,
-                                    "username": user.username,
-                                    "role": user.role,
-                                    "created_at": user.created_at
-                                }));
-                            }
-                            Ok(None) => {
-                                return HttpResponse::NotFound().json(json!({
-                                    "error": "User not found"
-                                }));
-                            }
-                            Err(e) => {
-                                error!("Database error: {}", e);
-                                return HttpResponse::InternalServerError().json(json!({
-                                    "error": "Failed to fetch user profile"
-                                }));
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Token validation failed
-                    }
-                }
-            }
-        }
-    }
-    
-    HttpResponse::Unauthorized().json(json!({"error": "Unauthorized"}))
-}
-
 pub async fn get_all_users(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
     // Check authorization
     if let Some(auth_header) = req.headers().get("Authorization") {
@@ -379,7 +326,7 @@ pub async fn get_all_users(req: HttpRequest, data: web::Data<AppState>) -> impl 
     HttpResponse::Unauthorized().json(serde_json::json!({"error": "Unauthorized"}))
 }
 
-pub fn validate_token(req: HttpRequest) -> Result<session::Claims, String> {
+pub fn validate_token(req: HttpRequest) -> Result<Claims, String> {
     // Extract token from Authorization header
     let auth_header = req.headers().get("Authorization")
         .ok_or_else(|| "Authorization header missing".to_string())?;
@@ -391,20 +338,87 @@ pub fn validate_token(req: HttpRequest) -> Result<session::Claims, String> {
     let token = auth_str.strip_prefix("Bearer ")
         .ok_or_else(|| "Invalid token format. Expected 'Bearer <token>'".to_string())?;
     
-    // Special handling for admin tokens
+    // Special handling for admin tokens generated on client side
     if token.starts_with("admin-token-") {
-        // Create a claims object for admin
-        return Ok(session::Claims {
+        info!("Using special admin token: {}", token);
+        // Create a claims object for admin with all required fields
+        return Ok(Claims {
             sub: "admin-user".to_string(),
             role: "admin".to_string(),
+            username: "admin".to_string(),
             exp: (Utc::now() + Duration::hours(24)).timestamp() as usize,
             iat: Utc::now().timestamp() as usize,
         });
     }
     
-    // Verify the JWT token for non-admin tokens
+    // For regular tokens, delegate to session::verify_jwt 
     session::verify_jwt(token)
-        .map_err(|e| format!("Invalid token: {}", e))
+}
+
+#[get("/profile")]
+async fn get_profile(req: HttpRequest, data: web::Data<AppState>) -> impl Responder {
+    let auth_header = match req.headers().get("Authorization") {
+        Some(h) => h,
+        None => return HttpResponse::Unauthorized().json(json!({"error": "Missing authorization header"}))
+    };
+    
+    let auth_str = match auth_header.to_str() {
+        Ok(s) => s,
+        Err(_) => return HttpResponse::Unauthorized().json(json!({"error": "Invalid authorization header"}))
+    };
+    
+    if !auth_str.starts_with("Bearer ") {
+        return HttpResponse::Unauthorized().json(json!({"error": "Invalid token format"}));
+    }
+    
+    let token = &auth_str["Bearer ".len()..];
+    
+    // Special case for admin tokens
+    if token.starts_with("admin-token-") {
+        info!("Admin token detected in profile endpoint");
+        return HttpResponse::Ok().json(json!({
+            "id": "admin-user",
+            "username": "admin",
+            "role": "admin"
+        }));
+    }
+    
+    // Regular JWT validation for standard tokens
+    match session::verify_jwt(token) {
+        Ok(claims) => {
+            // Fetch user data from database
+            match sqlx::query!(
+                "SELECT id, username, role FROM users WHERE id = ?",
+                claims.sub
+            )
+            .fetch_optional(&data.db)
+            .await {
+                Ok(Some(user)) => {
+                    HttpResponse::Ok().json(json!({
+                        "id": user.id,
+                        "username": user.username,
+                        "role": user.role
+                    }))
+                },
+                Ok(None) => {
+                    HttpResponse::NotFound().json(json!({
+                        "error": "User not found"
+                    }))
+                },
+                Err(e) => {
+                    error!("Database error: {}", e);
+                    HttpResponse::InternalServerError().json(json!({
+                        "error": "Internal server error"
+                    }))
+                }
+            }
+        },
+        Err(e) => {
+            HttpResponse::Unauthorized().json(json!({
+                "error": format!("Invalid token: {}", e)
+            }))
+        }
+    }
 }
 
 pub fn init_routes() -> actix_web::Scope {
@@ -412,6 +426,6 @@ pub fn init_routes() -> actix_web::Scope {
         .route("/register", web::post().to(register))
         .route("/login", web::post().to(login))
         .route("/refresh", web::post().to(refresh_token))
-        .route("/profile", web::get().to(get_user_profile))
+        .service(get_profile)  // Use service instead of route for #[get] handlers
         .route("/users", web::get().to(get_all_users))
 }

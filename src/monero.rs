@@ -242,10 +242,8 @@ impl MoneroPaymentStore {
 
     // Add method to get all payments
     pub fn get_all_payments(&self) -> Vec<MoneroPaymentRequest> {
-        self.payments.lock().unwrap()
-            .values()
-            .cloned()
-            .collect()
+        let payments = self.payments.lock().unwrap();
+        payments.values().cloned().collect()
     }
 
     // Create a new function for non-async access

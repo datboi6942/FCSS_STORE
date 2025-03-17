@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use uuid::Uuid;
 use crate::AppState;
-use sqlx::SqlitePool;
 use log::error;
 use serde_json::json;
 
@@ -104,21 +103,6 @@ pub async fn add_product(
     }
 }
 
-pub fn init_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("/products")
-            .route("", web::get().to(list_products))
-            .route("", web::post().to(add_product))
-            .route("/ids", web::get().to(get_product_ids))
-    );
-}
-
-pub async fn get_all_products(
-    _pool: web::Data<SqlitePool>,
-) -> impl Responder {
-    HttpResponse::Ok().json("Products list")
-}
-
 // Add this function to handle direct product purchase
 pub async fn purchase_product(
     state: web::Data<AppState>,
@@ -197,30 +181,6 @@ pub async fn purchase_product(
 #[derive(Deserialize)]
 pub struct PurchaseRequest {
     pub user_id: String,
-    pub product_id: String,
     pub price: f64,
     pub email: String,
-}
-
-// Add this new function to get all product IDs
-pub async fn get_product_ids(state: web::Data<AppState>) -> impl Responder {
-    let result = sqlx::query!(
-        "SELECT id FROM products"
-    )
-    .fetch_all(&state.db)
-    .await;
-    
-    match result {
-        Ok(rows) => {
-            let ids: Vec<String> = rows.into_iter().map(|row| row.id).collect();
-            println!("Returning {} product IDs", ids.len());
-            HttpResponse::Ok().json(ids)
-        },
-        Err(e) => {
-            log::error!("Failed to fetch product IDs: {}", e);
-            HttpResponse::InternalServerError().json(
-                serde_json::json!({"error": "Failed to fetch product IDs"})
-            )
-        }
-    }
 }

@@ -23,5 +23,16 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: ['qrcode']
+  },
+  server: {
+    proxy: {
+      '/api': 'http://localhost:5000',
+      '/cart': 'http://localhost:5000',
+      '/monero': 'http://localhost:5000',
+      '/ws': {
+        target: 'ws://localhost:5000',
+        ws: true
+      }
+    }
   }
 });

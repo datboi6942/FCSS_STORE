@@ -8,6 +8,11 @@ use crate::AppState;
 use crate::monero::MoneroPaymentRequest;
 use chrono::{Utc};
 use crate::auth;
+use crate::monero_api;
+use rand::{thread_rng, Rng};
+use rand::distributions::Alphanumeric;
+use serde_json::json;
+use crate::types::ShippingInfo;
 
 // Define our data structures
 pub type CartStore = Mutex<HashMap<String, Cart>>;
@@ -23,7 +28,7 @@ pub struct Cart {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CartItem {
-    pub product_id: String,
+    pub id: String,
     pub quantity: i32,
     pub price: f64,
     pub name: String,
@@ -56,6 +61,14 @@ pub struct CheckoutResponse {
     pub order_id: String,
     pub payment: Option<MoneroPaymentRequest>,
     pub message: Option<String>,
+}
+
+// Define the CheckoutData struct
+#[derive(Debug, Deserialize)]
+pub struct CheckoutData {
+    pub items: Vec<CartItem>,
+    pub total: f64,
+    pub shipping_info: Option<ShippingInfo>,
 }
 
 // Helper function to get or create a cart
@@ -132,7 +145,7 @@ pub async fn add_to_cart(
     // Check if product already exists in cart
     let mut found = false;
     for item in &mut cart.items {
-        if item.product_id == add_request.product_id {
+        if item.id == add_request.product_id {
             item.quantity += add_request.quantity;
             found = true;
             break;
@@ -142,7 +155,7 @@ pub async fn add_to_cart(
     // Add new item if not found
     if !found {
         cart.items.push(CartItem {
-            product_id: product.id.clone(),
+            id: add_request.product_id.clone(),
             quantity: add_request.quantity,
             price: product.price,
             name: product.name.clone(),
@@ -220,34 +233,154 @@ pub async fn get_cart(
 }
 
 // New checkout endpoint that uses Monero payments
-#[post("/api/checkout")]
-#[allow(non_snake_case)]
+#[post("/checkout")]
 pub async fn checkout(
-    app_state: web::Data<AppState>,
-    checkout_data: web::Json<CheckoutRequest>,
+    req: HttpRequest,
+    data: web::Json<CheckoutData>,
+    app_state: web::Data<AppState>
 ) -> impl Responder {
-    // Add debug logging
-    println!("Received checkout request: {:?}", checkout_data);
+    // Get user ID from authentication
+    let user_id = match auth::validate_token(req.clone()) {
+        Ok(claims) => claims.sub,
+        Err(_) => "guest".to_string()
+    };
     
-    // Create a unique order ID
-    let order_id = Uuid::new_v4().to_string();
+    // Use provided shipping info or create default if not provided
+    let shipping_info = data.shipping_info.clone().unwrap_or(ShippingInfo {
+        name: "Customer".to_string(),
+        address: "Address".to_string(),
+        city: "City".to_string(),
+        state: "State".to_string(), 
+        zip: "12345".to_string(),
+        country: "Country".to_string(),
+        email: "customer@example.com".to_string(),
+    });
+
+    info!("Processing checkout for user: {}", user_id);
     
-    // Create Monero payment request
-    let total_amount = checkout_data.total;
-    let payment = app_state.monero_payments.create_payment_usd(order_id.clone(), total_amount);
+    // Generate order ID
+    let order_id = format!("ORD-{}-{}", 
+        Utc::now().timestamp(),
+        thread_rng()
+            .sample_iter(Alphanumeric)
+            .take(4)
+            .map(char::from)
+            .collect::<String>()
+    );
     
-    // Add debug logging
-    println!("Created Monero payment: {:?}", payment);
+    // Start transaction
+    let mut tx = match app_state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            error!("Failed to start transaction: {}", e);
+            return HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Database error"
+            }));
+        }
+    };
     
-    // Return the checkout response with payment details
-    HttpResponse::Ok()
-        .content_type("application/json")
-        .json(CheckoutResponse {
-            success: true,
+    // Fix the temporary value issues with timestamps
+    let now = Utc::now().timestamp(); // Create a longer-lived value for the timestamp
+
+    match sqlx::query!(
+        r#"
+        INSERT INTO orders (
+            id, user_id, status, total_amount, created_at, updated_at,
+            shipping_name, shipping_address, shipping_city, shipping_state,
+            shipping_zip, shipping_country, shipping_email
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+        order_id,
+        user_id,
+        "Pending",
+        data.total,
+        now,
+        now,
+        shipping_info.name,
+        shipping_info.address,
+        shipping_info.city,
+        shipping_info.state,
+        shipping_info.zip,
+        shipping_info.country,
+        shipping_info.email
+    )
+    .execute(&mut *tx)
+    .await {
+        Ok(_) => {
+            info!("Created order: {}", order_id);
+        },
+        Err(e) => {
+            error!("Failed to create order: {}", e);
+            let _ = tx.rollback().await;
+            return HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Failed to create order"
+            }));
+        }
+    }
+    
+    // Create order items
+    for item in &data.items {
+        match sqlx::query!(
+            r#"
+            INSERT INTO order_items (
+                order_number, product_id, quantity, price
+            ) VALUES (?, ?, ?, ?)
+            "#,
             order_id,
-            payment: Some(payment),
-            message: Some("Please send Monero to the provided address".to_string()),
-        })
+            item.id,
+            item.quantity,
+            item.price
+        )
+        .execute(&mut *tx)
+        .await {
+            Ok(_) => {
+                info!("Added item {} to order {}", item.id, order_id);
+            },
+            Err(e) => {
+                error!("Failed to add item to order: {}", e);
+                let _ = tx.rollback().await;
+                return HttpResponse::InternalServerError().json(json!({
+                    "success": false,
+                    "error": format!("Failed to add items to order: {}", e)
+                }));
+            }
+        }
+    }
+    
+    // Commit transaction
+    if let Err(e) = tx.commit().await {
+        error!("Failed to commit transaction: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": "Failed to complete order"
+        }));
+    }
+    
+    // Generate Monero payment details
+    let payment = match monero_api::create_payment_for_order(
+        &app_state,
+        &order_id,
+        data.total
+    ).await {
+        Ok(payment_details) => {
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "order_id": order_id,
+                "payment": payment_details
+            }))
+        },
+        Err(e) => {
+            error!("Failed to create payment: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Failed to create payment"
+            }))
+        }
+    };
+    
+    payment
 }
 
 // Direct checkout endpoint
@@ -339,4 +472,6 @@ pub fn init_routes() -> actix_web::Scope {
         .route("/add", web::post().to(add_to_cart))
         .route("/{user_id}", web::get().to(get_cart))
         .route("/remove/{cart_id}/{item_index}", web::delete().to(remove_from_cart))
+        .service(checkout)
+        .service(direct_checkout)
 }

@@ -278,12 +278,3 @@ pub struct CryptoPaymentConfirmation {
     pub currency: String,
     pub transaction_hash: String,
 }
-
-pub fn init_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("/payment")
-            .route("/initiate", web::post().to(initiate_payment))
-            .route("/verify", web::post().to(verify_payment))
-            .route("/confirm-crypto", web::post().to(confirm_crypto_payment))
-    );
-}

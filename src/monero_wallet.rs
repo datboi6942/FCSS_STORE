@@ -5,29 +5,6 @@ use std::env;
 use serde_json::json;
 use rand;
 use chrono;
-use std::error::Error;
-
-#[derive(Debug, Serialize)]
-struct RpcRequest {
-    jsonrpc: String,
-    id: String,
-    method: String,
-    params: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct RpcResponse {
-    id: String,
-    jsonrpc: String,
-    result: Option<serde_json::Value>,
-    error: Option<RpcError>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RpcError {
-    code: i32,
-    message: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct MoneroWallet {
@@ -114,22 +91,6 @@ impl MoneroWallet {
         // For demonstration, return the main wallet address
         // In production, you'd make a real RPC call and create a unique address
         Ok(self.address.clone())
-    }
-
-    pub async fn get_balance(&self) -> Result<f64, Box<dyn Error>> {
-        let params = serde_json::json!({ "account_index": 0 });
-        
-        match self.call_rpc("get_balance", params).await {
-            Ok(result) => {
-                let balance = result["balance"].as_u64()
-                    .ok_or("No balance in response")? as f64 / 1_000_000_000_000.0;
-                Ok(balance)
-            },
-            Err(_) => {
-                // Fallback to returning the wallet's balance if RPC fails
-                Ok(0.0)
-            }
-        }
     }
 
     pub async fn check_transfers(&self) -> Result<Vec<TransferDetails>, String> {
@@ -220,77 +181,5 @@ impl MoneroWallet {
         });
         
         Ok(matching_transfer)
-    }
-
-    // Verify a payment using view key and tx_hash
-    pub async fn verify_transaction(&self, tx_hash: &str, recipient_address: &str) -> Result<bool, String> {
-        info!("Verifying transaction {} for address {}", tx_hash, recipient_address);
-        
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "id": "0",
-            "method": "check_tx_key",
-            "params": {
-                "txid": tx_hash,
-                "address": recipient_address,
-                "tx_key": "" // In real implementation, this would be provided by the user
-            }
-        });
-        
-        match self.client
-            .post(&self.rpc_url)
-            .basic_auth(&self.rpc_username, Some(&self.rpc_password))
-            .json(&payload)
-            .send()
-            .await {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        match response.json::<serde_json::Value>().await {
-                            Ok(json_response) => {
-                                if let Some(received) = json_response["result"]["received"].as_u64() {
-                                    Ok(received > 0)
-                                } else {
-                                    Ok(false) // Could not confirm receipt
-                                }
-                            },
-                            Err(e) => Err(format!("Error parsing verification response: {}", e))
-                        }
-                    } else {
-                        Err(format!("Error response from RPC: {}", response.status()))
-                    }
-                },
-                Err(e) => {
-                    warn!("RPC verification failed, using mock result: {}", e);
-                    // For demo, return success 70% of the time
-                    Ok(rand::random::<f64>() < 0.7)
-                }
-        }
-    }
-
-    async fn call_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, Box<dyn Error>> {
-        let request = RpcRequest {
-            jsonrpc: "2.0".to_string(),
-            id: "1".to_string(),
-            method: method.to_string(),
-            params,
-        };
-
-        let response = self.client
-            .post(&self.rpc_url)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(format!("RPC request failed with status: {}", response.status()).into());
-        }
-
-        let rpc_response: RpcResponse = response.json().await?;
-        
-        if let Some(error) = rpc_response.error {
-            return Err(format!("RPC error: {} (code: {})", error.message, error.code).into());
-        }
-
-        rpc_response.result.ok_or_else(|| "No result in response".into())
     }
 } 

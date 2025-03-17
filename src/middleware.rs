@@ -85,9 +85,7 @@ where
 }
 
 // Admin authorization middleware
-pub fn admin_required() -> AdminMiddleware {
-    AdminMiddleware {}
-}
+// pub fn admin_required() -> AdminMiddleware { ... }
 
 pub struct AdminMiddleware {}
 

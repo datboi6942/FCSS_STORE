@@ -8,8 +8,6 @@ use log;
 use crate::orders::create_order;
 use crate::types::ShippingInfo;
 use crate::orders::OrderItem;
-use uuid;
-use chrono;
 use sqlx::Row;
 
 #[derive(Deserialize)]
@@ -50,6 +48,13 @@ pub struct Item {
     pub id: String,
     pub price: f64,
     pub quantity: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CheckoutRequest {
+    pub product_id: String,
+    pub price: f64,
+    pub shipping_info: Option<ShippingInfo>,
 }
 
 #[post("/api/monero/create_payment")]
@@ -263,16 +268,21 @@ pub async fn force_check_payment(
             // In production, you would check the wallet RPC for this specific payment
             // For now, use a higher chance of confirmation for manually triggered checks
             if rand::random::<f64>() < 0.5 {  // 50% chance 
-                app_state.monero_payments.update_payment_status(&payment_id, PaymentStatus::Confirmed);
-                
-                // Get the updated payment
-                let updated_payment = app_state.monero_payments.get_payment(&payment_id);
-                
-                return HttpResponse::Ok().json(PaymentResponse {
-                    success: true,
-                    message: Some("Payment confirmed".to_string()),
-                    payment: updated_payment,
-                });
+                let update_result = app_state.monero_payments.update_payment_status(&payment_id, PaymentStatus::Confirmed);
+                if update_result.is_some() {
+                    log::info!("Successfully updated payment status in memory");
+                    
+                    // Get the updated payment
+                    let updated_payment = app_state.monero_payments.get_payment(&payment_id);
+                    
+                    return HttpResponse::Ok().json(PaymentResponse {
+                        success: true,
+                        message: Some("Payment confirmed".to_string()),
+                        payment: updated_payment,
+                    });
+                } else {
+                    log::error!("Failed to update payment status in memory - payment not found");
+                }
             }
         }
         
@@ -292,72 +302,41 @@ pub async fn force_check_payment(
 
 #[post("/checkout")]
 pub async fn checkout_handler(
-    app_state: web::Data<AppState>,
-    checkout_data: web::Json<CheckoutData>,
+    req: HttpRequest,
+    data: web::Json<CheckoutRequest>,
+    app_state: web::Data<AppState>
 ) -> impl Responder {
-    // Log the method and request info
-    log::info!("Checkout handler called with POST method");
-    log::info!("Received checkout data: {:?}", checkout_data);
+    // Extract the shipping info or use default
+    let shipping_info = data.shipping_info.clone().unwrap_or(ShippingInfo {
+        name: "Customer".to_string(),
+        address: "Address".to_string(),
+        city: "City".to_string(),
+        state: "State".to_string(),
+        zip: "12345".to_string(),
+        country: "Country".to_string(),
+        email: "customer@example.com".to_string(),
+    });
     
-    // First ensure the schema is correct
-    if let Err(e) = ensure_monero_payment_schema(&app_state.db).await {
-        log::error!("Failed to ensure schema: {}", e);
-        return HttpResponse::InternalServerError().json(json!({
-            "success": false,
-            "error": format!("Database schema error: {}", e)
-        }));
-    }
-    
-    // Create Monero payment request
-    let payment = app_state.monero_payments.create_payment_usd(
-        format!("temp-{}", uuid::Uuid::new_v4().to_string()),
-        checkout_data.total
-    );
-    
-    log::info!("Created payment with ID: {}", payment.payment_id);
-    
-    // Insert the payment record with the order_id initially set to empty string
-    let now = chrono::Utc::now().timestamp();
-    match sqlx::query(
-        "INSERT INTO monero_payments (payment_id, amount, address, status, created_at, updated_at, order_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)"
-    )
-    .bind(payment.payment_id.clone())
-    .bind(payment.amount)
-    .bind(payment.address.clone())
-    .bind("Pending")  // Convert the enum to string
-    .bind(now)
-    .bind(now)
-    .bind("")  // Empty string for order_id initially
-    .execute(&app_state.db)
-    .await {
-        Ok(_) => log::info!("Inserted payment record into database"),
-        Err(e) => {
-            log::error!("Failed to insert payment record: {}", e);
-            return HttpResponse::InternalServerError().json(json!({
-                "success": false,
-                "error": format!("Failed to insert payment record: {}", e)
-            }));
-        }
-    }
-    
-    // Convert checkout items to OrderItems
-    let order_items: Vec<OrderItem> = checkout_data.items
-        .iter()
-        .map(|item| OrderItem {
-            product_id: item.id.clone(),
-            quantity: item.quantity,
-            price: item.price,
-        })
-        .collect();
+    // Create a single order item
+    let order_items = vec![OrderItem {
+        product_id: data.product_id.clone(),
+        quantity: 1,  // Default to 1
+        price: data.price,
+    }];
+
+    // Extract user ID from JWT token or use guest
+    let user_id = match crate::auth::validate_token(req) {
+        Ok(claims) => claims.sub,
+        Err(_) => "guest".to_string()
+    };
 
     // Create the order
     let order = match create_order(
         &app_state.db,
-        checkout_data.shipping_info.clone(),
+        shipping_info,
         order_items,
-        checkout_data.total,
-        Some(checkout_data.user_id.clone()),
+        data.price,
+        Some(user_id),
     ).await {
         Ok(order) => order,
         Err(e) => {
@@ -376,7 +355,7 @@ pub async fn checkout_handler(
         "UPDATE monero_payments SET order_id = ? WHERE payment_id = ?"
     )
     .bind(order.id.clone())
-    .bind(payment.payment_id.clone())
+    .bind(data.product_id.clone())
     .execute(&app_state.db)
     .await {
         Ok(_) => log::info!("Updated payment record with order ID: {}", order.id),
@@ -387,11 +366,11 @@ pub async fn checkout_handler(
     match sqlx::query(
         "UPDATE orders SET payment_id = ? WHERE id = ?"
     )
-    .bind(payment.payment_id.clone())
+    .bind(data.product_id.clone())
     .bind(order.id.clone())
     .execute(&app_state.db)
     .await {
-        Ok(_) => log::info!("Updated order with payment ID: {}", payment.payment_id),
+        Ok(_) => log::info!("Updated order with payment ID: {}", data.product_id),
         Err(e) => {
             log::error!("Failed to update order with payment ID: {}", e);
             return HttpResponse::InternalServerError().json(json!({
@@ -402,15 +381,18 @@ pub async fn checkout_handler(
     }
     
     // Update the in-memory payment as well
-    if let Err(e) = app_state.monero_payments.update_payment_order_id(&payment.payment_id, &order.id) {
-        log::warn!("Failed to update payment in memory: {}", e);
+    let update_result = app_state.monero_payments.update_payment_order_id(&data.product_id, &order.id);
+    if update_result.is_ok() {
+        log::info!("Updated payment in memory with order ID: {}", order.id);
+    } else {
+        log::warn!("Failed to update payment in memory - payment not found");
     }
     
     // Return success response
     HttpResponse::Ok().json(json!({
         "success": true,
         "order_id": order.id,
-        "payment": payment,
+        "payment": data.product_id,
         "message": "Please send Monero to the provided address"
     }))
 }
@@ -644,6 +626,262 @@ pub async fn validate_order(
     }
 }
 
+// Add a new endpoint to check payment status
+#[get("/check_payment/{order_id}")]
+pub async fn check_payment_status(
+    path: web::Path<String>,
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    let order_id = path.into_inner();
+    
+    // Find the payment for this order
+    match sqlx::query!(
+        "SELECT mp.payment_id, mp.status, mp.amount, mp.address FROM monero_payments mp
+         JOIN orders o ON mp.payment_id = o.payment_id
+         WHERE o.id = ?",
+        order_id
+    )
+    .fetch_optional(&app_state.db)
+    .await {
+        Ok(Some(payment)) => {
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "status": payment.status,
+                "amount": payment.amount,
+                "address": payment.address,
+                "payment_id": payment.payment_id
+            }))
+        },
+        Ok(None) => {
+            // No payment found, check if order exists
+            match sqlx::query!("SELECT id FROM orders WHERE id = ?", order_id)
+                .fetch_optional(&app_state.db)
+                .await {
+                    Ok(Some(_)) => {
+                        HttpResponse::Ok().json(json!({
+                            "success": false,
+                            "error": "No payment found for this order",
+                            "status": "not_found"
+                        }))
+                    },
+                    _ => {
+                        HttpResponse::NotFound().json(json!({
+                            "success": false,
+                            "error": "Order not found",
+                            "status": "invalid_order"
+                        }))
+                    }
+                }
+        },
+        Err(e) => {
+            log::error!("Database error checking payment: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": "Database error",
+                "status": "error"
+            }))
+        }
+    }
+}
+
+// Add this endpoint to manually sync all order statuses from payments
+#[post("/admin/sync-all-payments")]
+pub async fn sync_all_payment_statuses(
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    log::info!("🔄 Manual sync of all payment statuses to orders triggered");
+    
+    // Get all confirmed payments
+    let confirmed_payments = sqlx::query!(
+        "SELECT payment_id, status FROM monero_payments WHERE status = 'Confirmed' OR status = 'confirmed'"
+    )
+    .fetch_all(&app_state.db)
+    .await;
+    
+    match confirmed_payments {
+        Ok(payments) => {
+            log::info!("Found {} confirmed payments to sync", payments.len());
+            
+            let mut success_count = 0;
+            
+            for payment in &payments {
+                // Safely unwrap the payment_id Option or skip this record
+                if let Some(payment_id) = &payment.payment_id {
+                    match sync_payment_status_to_order(&app_state.db, payment_id, "Confirmed").await {
+                        Ok(_) => {
+                            log::info!("✅ Successfully synced payment {} to order", payment_id);
+                            success_count += 1;
+                        },
+                        Err(e) => {
+                            log::error!("❌ Failed to sync payment {} to order: {}", payment_id, e);
+                        }
+                    }
+                } else {
+                    log::warn!("Skipping payment with null payment_id");
+                }
+            }
+            
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "message": format!("Synced {}/{} confirmed payments to orders", success_count, payments.len())
+            }))
+        },
+        Err(e) => {
+            log::error!("Failed to query confirmed payments: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Database error: {}", e)
+            }))
+        }
+    }
+}
+
+// Add this endpoint to fix the missing payment_id issue
+#[post("/fix-orphaned-payments")]
+pub async fn fix_orphaned_payments(
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    log::info!("🔧 Running orphaned payments fix");
+    
+    // 1. Get all monero payments with order_id that aren't linked back to an order
+    let orphaned = sqlx::query!(
+        "SELECT mp.payment_id, mp.status, mp.order_id 
+         FROM monero_payments mp
+         LEFT JOIN orders o ON o.payment_id = mp.payment_id
+         WHERE mp.order_id IS NOT NULL 
+         AND mp.order_id != '' 
+         AND (o.payment_id IS NULL OR o.payment_id = '')"
+    )
+    .fetch_all(&app_state.db)
+    .await;
+    
+    if let Err(e) = &orphaned {
+        log::error!("Database error: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Database error: {}", e)
+        }));
+    }
+    
+    let orphaned = orphaned.unwrap();
+    log::info!("Found {} orphaned payments with order IDs", orphaned.len());
+    
+    let mut fixed_orders = Vec::new();
+    
+    // 2. For each payment, link it to its order
+    for payment in orphaned {
+        if let Some(payment_id) = &payment.payment_id {
+            if let Some(order_id) = &payment.order_id {
+                if !order_id.is_empty() {
+                    log::info!("Connecting payment {} to order {}", payment_id, order_id);
+                    
+                    // Update the order with the payment ID
+                    let update_result = sqlx::query!(
+                        "UPDATE orders SET payment_id = ? WHERE id = ?",
+                        payment_id,
+                        order_id
+                    )
+                    .execute(&app_state.db)
+                    .await;
+                    
+                    match update_result {
+                        Ok(_) => {
+                            log::info!("✅ Successfully linked payment {} to order {}", payment_id, order_id);
+                            
+                            // If the payment is confirmed, also update the order status
+                            if payment.status == "Confirmed" || payment.status == "confirmed" {
+                                log::info!("Payment is confirmed, updating order status too");
+                                
+                                let status_update = sqlx::query!(
+                                    "UPDATE orders SET status = 'Confirmed' WHERE id = ?",
+                                    order_id
+                                )
+                                .execute(&app_state.db)
+                                .await;
+                                
+                                if let Ok(_) = status_update {
+                                    log::info!("✅ Updated order status to Confirmed");
+                                }
+                            }
+                            
+                            fixed_orders.push(json!({
+                                "order_id": order_id,
+                                "payment_id": payment_id,
+                                "payment_status": payment.status
+                            }));
+                        },
+                        Err(e) => {
+                            log::error!("❌ Failed to link payment to order: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Return the fix results
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "fixed_count": fixed_orders.len(),
+        "fixed_orders": fixed_orders
+    }))
+}
+
+// Add a comprehensive diagnostic endpoint for all payments
+#[get("/debug/dump-all-payments")]
+pub async fn dump_all_payments(
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    log::info!("🔍 Dumping all payment records for debugging");
+    
+    // Get all payments from the database
+    let db_payments = sqlx::query(
+        "SELECT payment_id, amount, address, status, created_at, updated_at, order_id FROM monero_payments"
+    )
+    .fetch_all(&app_state.db)
+    .await;
+    
+    // Get all in-memory payments
+    let memory_payments: Vec<_> = app_state.monero_payments
+        .get_all_payments()
+        .into_iter()
+        .collect();
+    
+    match db_payments {
+        Ok(rows) => {
+            // Convert the rows to a serializable format
+            let serializable_payments: Vec<serde_json::Value> = rows.iter().map(|row| {
+                json!({
+                    "payment_id": row.get::<String, _>("payment_id"),
+                    "amount": row.get::<f64, _>("amount"),
+                    "address": row.get::<String, _>("address"),
+                    "status": row.get::<String, _>("status"),
+                    "created_at": row.get::<i64, _>("created_at"),
+                    "updated_at": row.get::<i64, _>("updated_at"),
+                    "order_id": row.try_get::<String, _>("order_id").unwrap_or_default()
+                })
+            }).collect();
+            
+            HttpResponse::Ok().json(json!({
+                "success": true,
+                "db_payments_count": serializable_payments.len(),
+                "memory_payments_count": memory_payments.len(),
+                "db_payments": serializable_payments,
+                "memory_payments": memory_payments
+            }))
+        },
+        Err(e) => {
+            log::error!("Failed to query payments: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Database error: {}", e),
+                "memory_payments_count": memory_payments.len(),
+                "memory_payments": memory_payments
+            }))
+        }
+    }
+}
+
 pub fn init_routes() -> actix_web::Scope {
     web::scope("/monero")
         .service(create_payment)
@@ -661,6 +899,12 @@ pub fn init_routes() -> actix_web::Scope {
         .service(get_order_payment)
         .service(get_all_orders)
         .service(validate_order)
+        .service(check_payment_status)
+        .service(sync_all_payment_statuses)
+        .service(fix_orphaned_payments)
+        .service(dump_all_payments)
+        .service(force_create_payment_links)
+        .service(force_update_order_status)
 }
 
 // First, let's fix the function that adds the column
@@ -686,4 +930,376 @@ pub async fn ensure_monero_payment_schema(pool: &sqlx::SqlitePool) -> Result<(),
     }
     
     Ok(())
+}
+
+// Rename our utility function to avoid the name conflict
+// And remove it from being registered as a service
+pub async fn create_payment_for_order(
+    app_state: &web::Data<AppState>,
+    order_id: &str,
+    amount: f64
+) -> Result<MoneroPaymentRequest, String> {
+    // Implement the payment creation logic here
+    log::info!("Creating Monero payment for order {}, amount: {}", order_id, amount);
+    
+    let payment = app_state.monero_payments.create_payment_sync(
+        order_id.to_string(),
+        amount
+    );
+    
+    // Log the new payment
+    log::info!("Created payment with ID: {}", payment.payment_id);
+    
+    // Create an association between the order and payment in the database
+    match sqlx::query(
+        "UPDATE monero_payments SET order_id = ? WHERE payment_id = ?"
+    )
+    .bind(order_id)
+    .bind(&payment.payment_id)
+    .execute(&app_state.db)
+    .await {
+        Ok(_) => {},
+        Err(e) => {
+            log::error!("Failed to update payment with order_id: {}", e);
+            // Continue anyway, the payment still works
+        }
+    }
+    
+    Ok(payment)
+}
+
+#[allow(unused_imports)]
+use uuid;
+#[allow(unused_imports)]
+use chrono;
+
+// Add this function to synchronize payment status with order status
+async fn sync_payment_status_to_order(pool: &sqlx::SqlitePool, payment_id: &str, status: &str) -> Result<(), sqlx::Error> {
+    log::info!("🔄 Synchronizing payment status '{}' for payment ID {} to order", status, payment_id);
+    
+    // First, log all orders and payments for debugging
+    log::info!("Debugging all orders and payments in the system:");
+    let all_orders = sqlx::query("SELECT id, payment_id, status FROM orders").fetch_all(pool).await?;
+    for row in &all_orders {
+        let order_id: String = row.get("id");
+        let payment_id_opt: Option<String> = row.get("payment_id");
+        let status: String = row.get("status");
+        log::info!("Order: {} | Payment ID: {:?} | Status: {}", order_id, payment_id_opt, status);
+    }
+    
+    // Find the order ID associated with this payment - more detailed query
+    log::info!("Searching for order with payment_id = {}", payment_id);
+    let query = format!("SELECT id, status FROM orders WHERE payment_id = '{}'", payment_id);
+    log::info!("Query: {}", query);
+    
+    let orders = sqlx::query(&query).fetch_all(pool).await?;
+    if orders.is_empty() {
+        log::warn!("❌ No orders found with payment_id = {}", payment_id);
+        
+        // Try alternative lookup via monero_payments table
+        let result = sqlx::query!(
+            "SELECT order_id FROM monero_payments WHERE payment_id = ?",
+            payment_id
+        )
+        .fetch_optional(pool)
+        .await?;
+        
+        if let Some(record) = result {
+            if let Some(order_id) = record.order_id {
+                if !order_id.is_empty() {
+                    log::info!("✅ Found order_id {} via monero_payments table for payment {}", order_id, payment_id);
+                    // Update the order status directly
+                    log::info!("Updating order {} status to {}", order_id, status);
+                    sqlx::query!(
+                        "UPDATE orders SET status = ? WHERE id = ?",
+                        status,
+                        order_id
+                    )
+                    .execute(pool)
+                    .await?;
+                    
+                    // Also make sure the payment_id is set on the order
+                    log::info!("Ensuring payment_id is set on order {}", order_id);
+                    sqlx::query!(
+                        "UPDATE orders SET payment_id = ? WHERE id = ?",
+                        payment_id,
+                        order_id
+                    )
+                    .execute(pool)
+                    .await?;
+                    
+                    return Ok(());
+                }
+            }
+        }
+        
+        log::error!("🔍 Still couldn't find any order for payment {}", payment_id);
+        return Ok(());
+    }
+    
+    // Process found orders
+    for row in orders {
+        let order_id: String = row.get("id");
+        let current_status: String = row.get("status");
+        
+        log::info!("✅ Found order {} with current status {}, updating to {}", order_id, current_status, status);
+        
+        // Update the order status
+        sqlx::query!(
+            "UPDATE orders SET status = ? WHERE id = ?",
+            status,
+            order_id
+        )
+        .execute(pool)
+        .await?;
+    }
+    
+    Ok(())
+}
+
+// Update this function to be more thorough when updating payment status
+pub async fn check_payment_status_and_update(app_state: &web::Data<AppState>, payment_id: &str) -> Result<bool, String> {
+    // First, check if the payment exists and get its current status
+    let payment = match app_state.monero_payments.get_payment(payment_id) {
+        Some(p) => p,
+        None => return Err(format!("Payment with ID {} not found", payment_id))
+    };
+    
+    // In a real implementation, you would check with the Monero RPC here
+    // For this example, we'll just use a random check with a 50% chance of confirmation
+    let is_confirmed = rand::random::<f64>() < 0.5;
+    
+    log::info!("Checking payment {} with current status {:?}, simulation result: confirmed={}", 
+               payment_id, payment.status, is_confirmed);
+    
+    // Only proceed with confirmation if the payment is currently pending
+    if is_confirmed && payment.status == PaymentStatus::Pending {
+        log::info!("🔔 Payment {} is confirmed, updating status", payment_id);
+        
+        // First update the database directly to ensure it's updated
+        match sqlx::query!(
+            "UPDATE monero_payments SET status = ? WHERE payment_id = ?",
+            "Confirmed",
+            payment_id
+        )
+        .execute(&app_state.db)
+        .await {
+            Ok(_) => log::info!("✅ Updated payment status in database for {}", payment_id),
+            Err(e) => log::error!("❌ Failed to update payment in database: {}", e)
+        }
+        
+        // Now also update the order status
+        match sync_payment_status_to_order(&app_state.db, payment_id, "Confirmed").await {
+            Ok(_) => log::info!("✅ Successfully synced payment status to order"),
+            Err(e) => {
+                log::error!("❌ Failed to update order status: {}", e);
+                return Err(format!("Failed to update order status: {}", e));
+            }
+        }
+        
+        // Also update in-memory store
+        if let Some(updated) = app_state.monero_payments.update_payment_status(&payment_id, PaymentStatus::Confirmed) {
+            log::info!("✅ Successfully updated payment status in memory: {:?}", updated.status);
+        } else {
+            log::error!("❌ Failed to update payment status in memory - payment not found");
+        }
+        
+        // Verify that the order status was actually updated in the database
+        let order_check = sqlx::query("SELECT id, status FROM orders WHERE payment_id = ?")
+            .bind(payment_id)
+            .fetch_optional(&app_state.db)
+            .await;
+            
+        match order_check {
+            Ok(Some(row)) => {
+                let order_id: String = row.get("id");
+                let status: String = row.get("status");
+                log::info!("🔍 Verification - Order {} has status {} after update", order_id, status);
+            }
+            Ok(None) => log::warn!("⚠️ Verification - No order found with payment_id {}", payment_id),
+            Err(e) => log::error!("❌ Verification query error: {}", e)
+        }
+        
+        Ok(true)
+    } else {
+        // Payment is not confirmed or not in pending state
+        log::info!("⏳ Payment {} remains in status {:?}", payment_id, payment.status);
+        Ok(false)
+    }
+}
+
+#[post("/admin/force-create-payment-links")]
+pub async fn force_create_payment_links(
+    app_state: web::Data<AppState>
+) -> impl Responder {
+    log::info!("🔧 Force creating payment links for all orders without payment_id");
+    
+    // 1. Find all orders without payment_id
+    let orphaned_orders = sqlx::query(
+        "SELECT id, user_id, total_amount FROM orders WHERE payment_id IS NULL OR payment_id = ''"
+    )
+    .fetch_all(&app_state.db)
+    .await;
+    
+    if let Err(e) = &orphaned_orders {
+        log::error!("Database error querying orphaned orders: {}", e);
+        return HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Database error: {}", e)
+        }));
+    }
+    
+    let orphaned_orders = orphaned_orders.unwrap();
+    if orphaned_orders.is_empty() {
+        return HttpResponse::Ok().json(json!({
+            "success": true,
+            "message": "No orders without payment links found",
+            "fixed_count": 0
+        }));
+    }
+    
+    log::info!("Found {} orders without payment links", orphaned_orders.len());
+    
+    let mut fixed_orders = Vec::new();
+    
+    // 2. For each order, create a new payment and link it
+    for order in orphaned_orders {
+        let order_id: String = order.get("id");
+        let total_amount: f64 = order.get("total_amount");
+        
+        log::info!("Creating payment for order {} with amount {}", order_id, total_amount);
+        
+        // First create the payment in the database to avoid foreign key constraints
+        let payment_id = format!("pay-{}", uuid::Uuid::new_v4().to_string());
+        let address = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A";
+        let now = chrono::Utc::now().timestamp();
+        
+        // Insert the payment record first
+        match sqlx::query(
+            "INSERT INTO monero_payments (payment_id, order_id, amount, address, status, created_at, updated_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&payment_id)
+        .bind(&order_id)
+        .bind(total_amount)
+        .bind(address)
+        .bind("Pending")
+        .bind(now)
+        .bind(now)
+        .execute(&app_state.db)
+        .await {
+            Ok(_) => {
+                log::info!("✅ Created payment record in database: {}", payment_id);
+                
+                // Now update the order with the payment ID
+                match sqlx::query(
+                    "UPDATE orders SET payment_id = ? WHERE id = ?"
+                )
+                .bind(&payment_id)
+                .bind(&order_id)
+                .execute(&app_state.db)
+                .await {
+                    Ok(_) => {
+                        log::info!("✅ Successfully linked payment {} to order {}", payment_id, order_id);
+                        fixed_orders.push(json!({
+                            "order_id": order_id,
+                            "payment_id": payment_id,
+                            "amount": total_amount
+                        }));
+                    },
+                    Err(e) => {
+                        log::error!("Failed to update order with payment ID: {}", e);
+                    }
+                }
+            },
+            Err(e) => {
+                log::error!("Failed to create payment record: {}", e);
+            }
+        }
+    }
+    
+    // Return the results
+    HttpResponse::Ok().json(json!({
+        "success": true,
+        "fixed_count": fixed_orders.len(),
+        "fixed_orders": fixed_orders
+    }))
+}
+
+// Add a new endpoint to directly force update order status
+#[post("/force-update-order-status/{order_id}")]
+pub async fn force_update_order_status(
+    app_state: web::Data<AppState>,
+    path: web::Path<String>
+) -> impl Responder {
+    let order_id = path.into_inner();
+    log::info!("🔄 Force updating order status for order: {}", order_id);
+    
+    // Get current order details
+    let order = sqlx::query(
+        "SELECT id, payment_id, status FROM orders WHERE id = ?"
+    )
+    .bind(&order_id)
+    .fetch_optional(&app_state.db)
+    .await;
+    
+    match order {
+        Ok(Some(order_row)) => {
+            let payment_id: String = order_row.get("payment_id");
+            let current_status: String = order_row.get("status");
+            
+            log::info!("Order {} has payment_id {} and status {}", order_id, payment_id, current_status);
+            
+            // Update the order status directly to Confirmed
+            match sqlx::query(
+                "UPDATE orders SET status = 'Confirmed' WHERE id = ?"
+            )
+            .bind(&order_id)
+            .execute(&app_state.db)
+            .await {
+                Ok(_) => {
+                    log::info!("✅ Successfully updated order status to Confirmed");
+                    
+                    // If there's a payment ID, also make sure it's updated
+                    if !payment_id.is_empty() {
+                        match sqlx::query(
+                            "UPDATE monero_payments SET status = 'Confirmed' WHERE payment_id = ?"
+                        )
+                        .bind(&payment_id)
+                        .execute(&app_state.db)
+                        .await {
+                            Ok(_) => log::info!("✅ Also updated payment status"),
+                            Err(e) => log::error!("Failed to update payment status: {}", e)
+                        }
+                    }
+                    
+                    HttpResponse::Ok().json(json!({
+                        "success": true,
+                        "message": "Order status updated to Confirmed"
+                    }))
+                },
+                Err(e) => {
+                    log::error!("Failed to update order status: {}", e);
+                    HttpResponse::InternalServerError().json(json!({
+                        "success": false,
+                        "error": format!("Failed to update order status: {}", e)
+                    }))
+                }
+            }
+        },
+        Ok(None) => {
+            log::error!("Order {} not found", order_id);
+            HttpResponse::NotFound().json(json!({
+                "success": false,
+                "error": "Order not found"
+            }))
+        },
+        Err(e) => {
+            log::error!("Database error: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Database error: {}", e)
+            }))
+        }
+    }
 }

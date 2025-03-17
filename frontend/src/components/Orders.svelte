@@ -12,25 +12,26 @@
   let submitClicked = false;
   let testOrderId = null;
   let debugData = null;
+  let error = null;
   
   onMount(async () => {
     console.log("Orders component mounted");
     if ($auth.isAuthenticated) {
       console.log("User is authenticated, fetching orders");
-      await fetchUserOrders();
+      await fetchOrders();
     } else {
       console.log("User not authenticated, cannot fetch orders");
       loading = false;
     }
   });
   
-  async function fetchUserOrders() {
+  async function fetchOrders() {
     try {
       loading = true;
       
       if (!$auth || !$auth.token) {
         console.error("No authentication token available");
-        userOrders = [];
+        orders = [];
         loading = false;
         return;
       }
@@ -38,22 +39,6 @@
       console.log("Fetching orders with token:", $auth.token.substring(0, 10) + "...");
       console.log("User ID:", $auth.user ? $auth.user.id : "Unknown");
       
-      // Call our debug token endpoint first to verify token
-      const tokenResponse = await fetch('http://localhost:5000/orders/debug-token', {
-        headers: {
-          'Authorization': `Bearer ${$auth.token}`
-        }
-      });
-      
-      const tokenData = await tokenResponse.json();
-      console.log("Token validation result:", tokenData);
-      
-      if (!tokenResponse.ok || !tokenData.success) {
-        console.error("Token validation failed:", tokenData.error);
-        throw new Error(`Invalid token: ${tokenData.error}`);
-      }
-      
-      // Now fetch orders since we know the token is valid
       const response = await fetch('http://localhost:5000/orders/my-orders', {
         headers: {
           'Authorization': `Bearer ${$auth.token}`
@@ -63,30 +48,25 @@
       console.log("Orders response status:", response.status);
       
       if (!response.ok) {
-        if (response.status === 404) {
-          console.log("No orders found (404)");
-          userOrders = [];
-          loading = false;
-          return;
-        }
-        throw new Error(`Failed to fetch your orders: ${response.status}`);
-      }
-      
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        console.error("Response is not JSON:", await response.text());
-        throw new Error("Invalid response format");
+        const text = await response.text();
+        console.error("Error response:", text);
+        throw new Error(`Failed to fetch orders: ${response.status} ${text}`);
       }
       
       const data = await response.json();
       console.log("Orders data:", data);
       
-      userOrders = data.success && data.orders ? data.orders : [];
+      if (data.success && Array.isArray(data.orders)) {
+        orders = data.orders;
+      } else {
+        orders = [];
+      }
       
-      console.log(`Fetched ${userOrders.length} orders for current user:`, userOrders);
-    } catch (error) {
-      console.error('Error fetching orders:', error);
-      userOrders = [];
+      console.log("Fetched orders:", orders);
+    } catch (err) {
+      console.error("Error fetching orders:", err);
+      error = err.message;
+      orders = [];
     } finally {
       loading = false;
     }
@@ -111,22 +91,17 @@
         }
       });
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Order not found');
-      }
-      
       const data = await response.json();
       
-      if (!data.success) {
+      if (!response.ok || !data.success) {
         throw new Error(data.error || 'Failed to look up order');
       }
       
       lookupOrder = data.order;
       console.log('Order found:', lookupOrder);
     } catch (error) {
-      lookupError = error.message;
       console.error('Order lookup error:', error);
+      lookupError = error.message;
     } finally {
       loading = false;
     }
@@ -263,7 +238,7 @@
     
     {#if lookupError}
       <div class="error-message">
-        <strong>Error:</strong> {lookupError}
+        {lookupError}
       </div>
     {/if}
     
@@ -339,34 +314,48 @@
       
       {#if loading}
         <div class="loading">Loading your orders...</div>
-      {:else if userOrders.length === 0}
+      {:else if error}
+        <div class="error">
+          <p>Error loading orders: {error}</p>
+          <button on:click={fetchOrders}>Try Again</button>
+        </div>
+      {:else if orders.length === 0}
         <div class="no-orders">
           <p>You don't have any orders yet.</p>
           <a href="/products" class="shop-now-btn">Shop Now</a>
         </div>
       {:else}
         <div class="orders-list">
-          {#each userOrders as order}
+          {#each orders as order}
             <div class="order-card">
               <div class="order-header">
                 <span class="order-id">Order #{order.id}</span>
-                <span class="order-date">{new Date(order.created_at * 1000).toLocaleDateString()}</span>
+                <span class="order-date">
+                  {new Date(order.created_at * 1000).toLocaleDateString()}
+                </span>
               </div>
               
               <div class="order-info">
                 <div class="order-status">
                   <span class="status-label">Status:</span>
-                  <span class="status-badge status-{order.status.toLowerCase()}">{order.status}</span>
+                  <span class="status-badge status-{order.status.toLowerCase()}">
+                    {order.status}
+                  </span>
                 </div>
                 
                 <div class="order-total">
                   <span class="total-label">Total:</span>
-                  <span class="total-value">${order.total_amount ? parseFloat(order.total_amount).toFixed(2) : '0.00'}</span>
+                  <span class="total-value">
+                    ${order.total_amount ? parseFloat(order.total_amount).toFixed(2) : '0.00'}
+                  </span>
                 </div>
                 
-                <button class="view-details-btn" on:click={() => navigate(`/order/${order.id}`)}>
-                  View Details
-                </button>
+                {#if order.payment_id}
+                  <div class="payment-info">
+                    <span class="payment-label">Payment ID:</span>
+                    <span class="payment-value">{order.payment_id}</span>
+                  </div>
+                {/if}
               </div>
             </div>
           {/each}
