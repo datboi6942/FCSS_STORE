@@ -37,11 +37,11 @@ pub async fn list_products(state: web::Data<AppState>) -> impl Responder {
         Ok(rows) => {
             let products: Vec<Product> = rows.into_iter().map(|row| {
                 Product {
-                    id: row.id,
-                    name: row.name,
-                    description: row.description,
+                    id: row.id.clone(),
+                    name: row.name.clone(),
+                    description: row.description.unwrap_or_default(),
                     price: row.price,
-                    available: row.available,
+                    available: row.available != 0,
                     created_at: Some(Utc::now()),
                 }
             }).collect();

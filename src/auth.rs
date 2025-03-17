@@ -177,47 +177,34 @@ pub async fn login(user: web::Json<UserLogin>, data: web::Data<AppState>) -> imp
     
     // Regular user authentication
     match sqlx::query!(
-        "SELECT id, username, password_hash, role FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?",
         user_data.username
     )
     .fetch_optional(&data.db)
     .await {
-        Ok(Some(user)) => {
-            // Try with bcrypt directly instead of using argon2
-            match bcrypt::verify(&user_data.password, &user.password_hash) {
+        Ok(Some(db_user)) => {
+            // Verify password
+            match bcrypt::verify(&user_data.password, &db_user.password_hash) {
                 Ok(true) => {
-                    // Password is correct
-                    info!("Login successful for user: {}", user_data.username);
-                    
-                    // Generate JWT token
-                    let claims = Claims {
-                        sub: user.id.clone(),
-                        username: user.username.clone(),
-                        role: user.role.clone(),
-                        exp: (Utc::now() + Duration::hours(TOKEN_EXPIRY_HOURS)).timestamp() as usize,
-                        iat: Utc::now().timestamp() as usize,
+                    // Create JWT token
+                    let user_id = db_user.id.clone();
+                    let role = db_user.role.clone();
+                    let token = match session::create_jwt(&user_id, &role) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            error!("Failed to create JWT token: {}", e);
+                            return HttpResponse::InternalServerError().json(
+                                json!({"error": "Authentication error"})
+                            );
+                        }
                     };
                     
-                    match encode(
-                        &Header::default(),
-                        &claims,
-                        &EncodingKey::from_secret(JWT_SECRET)
-                    ) {
-                        Ok(token) => {
-                            HttpResponse::Ok().json(json!({
-                                "token": token,
-                                "user_id": user.id,
-                                "username": user.username,
-                                "role": user.role
-                            }))
-                        },
-                        Err(e) => {
-                            error!("Failed to generate JWT token: {}", e);
-                            HttpResponse::InternalServerError().json(json!({
-                                "error": "Authentication error"
-                            }))
-                        }
-                    }
+                    HttpResponse::Ok().json(UserResponse {
+                        id: user_id,
+                        username: db_user.username.clone(),
+                        role: role,
+                        token
+                    })
                 },
                 _ => {
                     // Password is incorrect
