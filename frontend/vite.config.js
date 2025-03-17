@@ -26,11 +26,15 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:5000',
-      '/cart': 'http://localhost:5000',
-      '/monero': 'http://localhost:5000',
+      '/api': {
+        target: 'http://192.168.6.53:5000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '')
+      },
+      '/cart': 'http://192.168.6.53:5000',
+      '/monero': 'http://192.168.6.53:5000',
       '/ws': {
-        target: 'ws://localhost:5000',
+        target: 'ws://192.168.6.53:5000',
         ws: true
       }
     }

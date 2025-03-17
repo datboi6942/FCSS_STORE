@@ -462,16 +462,9 @@ async fn main() -> std::io::Result<()> {
     log::info!("Starting HTTP server at http://127.0.0.1:5000");
     HttpServer::new(move || {
         let cors = Cors::default()
-            .allowed_origin("http://localhost:3000")
-            .allowed_origin("http://127.0.0.1:3000")
-            .allowed_origin("http://localhost:5000")
-            .allowed_origin("http://127.0.0.1:5000")
-            .allowed_origin("http://localhost:5173")
-            .allowed_origin("http://127.0.0.1:5173")
-            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-            .allowed_headers(vec![header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
-            .expose_headers(vec![header::CONTENT_TYPE])
-            .supports_credentials()
+            .allow_any_origin()
+            .allow_any_method()
+            .allow_any_header()
             .max_age(3600);
         
         App::new()

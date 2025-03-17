@@ -182,5 +182,5 @@ function debounce(func, timeout = 300) {
   };
 }
 
-// Update API URL to port 5000
-const API_URL = 'http://localhost:5000'; 
+// Update API URL
+const API_URL = 'http://192.168.6.53:5000'; 
