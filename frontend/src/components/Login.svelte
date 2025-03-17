@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { auth } from '../stores/auth.js';
   import { navigate } from 'svelte-routing';
+  import { config } from '../config.js';
   
   let username = '';
   let password = '';
@@ -48,7 +49,7 @@
         return;
       }
       
-      const response = await fetch('http://localhost:5000/auth/login', {
+      const response = await fetch(`${config.api.auth}/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -111,7 +112,7 @@
       isLoading = true;
       errorMessage = '';
       
-      const response = await fetch('http://localhost:5000/auth/register', {
+      const response = await fetch(`${config.api.auth}/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

@@ -4,6 +4,7 @@
   import QRCode from 'qrcode';
   import { auth } from '../stores/auth.js';
   import { navigate } from 'svelte-routing';
+  import { config } from '../config.js';
   
   export const params = {}; // For external reference
   
@@ -17,9 +18,6 @@
   let socket = null;
   let paymentData = null;
   let pollingEnabled = true; // Fallback to polling if WebSocket fails
-  
-  // Define this at the top of the script tag
-  const API_BASE_URL = 'http://localhost:5000';
   
   // Function to go back to the cart page
   function goToCart() {
@@ -36,7 +34,7 @@
       if (!order_id || !pollingEnabled) return;
       
       try {
-        const response = await fetch(`${API_BASE_URL}/monero/check_payment/${order_id}`);
+        const response = await fetch(`${config.api.base}/monero/check_payment/${order_id}`);
         
         // Check if the response is OK
         if (!response.ok) {
@@ -94,7 +92,7 @@
         const checkoutData = JSON.parse(checkoutDataString);
         
         // Send checkout request with shipping info
-        fetch(`${API_BASE_URL}/cart/checkout`, {
+        fetch(`${config.api.cart}/checkout`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -219,8 +217,7 @@
     }
     
     try {
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      socket = new WebSocket(`${wsProtocol}//localhost:5000/ws/payment/${order_id}`);
+      socket = new WebSocket(config.ws.payment(order_id));
       
       socket.onopen = () => {
         console.log(`WebSocket connected for order ${order_id}`);

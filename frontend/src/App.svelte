@@ -10,6 +10,7 @@
   import { onMount } from 'svelte';
   import { auth } from './stores/auth.js';
   import { cart, cartTotal } from './stores/cart.js';
+  import { config } from './config.js';
   
   // Import missing components
   import Nav from './components/Nav.svelte';
