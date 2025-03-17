@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { config } from './config.js';  // MUST be first import
   import { writable } from 'svelte/store';
   import NavBar from './components/NavBar.svelte';
   import Home from './components/Home.svelte';
@@ -10,7 +11,6 @@
   import { onMount } from 'svelte';
   import { auth } from './stores/auth.js';
   import { cart, cartTotal } from './stores/cart.js';
-  import { config } from './config.js';
   
   // Import missing components
   import Nav from './components/Nav.svelte';
