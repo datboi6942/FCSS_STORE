@@ -415,7 +415,7 @@
       }
 
       try {
-        const response = await fetch('http://localhost:5000/health', {
+        const response = await fetch('http://192.168.6.53:5000/health', {
           signal: AbortSignal.timeout(5000)
         });
         const online = response.ok;

@@ -52,7 +52,7 @@
     
     for (let i = 0; i < maxRetries; i++) {
       try {
-        const response = await fetch('http://localhost:5000/health', {
+        const response = await fetch('http://192.168.6.53:5000/health', {
           // Use a 5000ms timeout
           signal: AbortSignal.timeout(5000)
         });
