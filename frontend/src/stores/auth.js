@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { config } from '../config.js';
 
 // Initial auth state
 const initialState = {
@@ -111,7 +112,7 @@ const createAuthStore = () => {
         }
         
         // Verify with backend
-        const response = await fetch('http://localhost:5000/auth/profile', {
+        const response = await fetch(config.api.auth + '/profile', {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Accept': 'application/json',
@@ -183,4 +184,4 @@ function debounce(func, timeout = 300) {
 }
 
 // Update API URL
-const API_URL = 'http://192.168.6.53:8080'; 
+const API_URL = config.api.base; 

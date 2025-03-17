@@ -4,9 +4,11 @@
     import ProductCard from './ProductCard.svelte';
     import { cart, cartTotal } from '../stores/cart.js';
     import { fade } from 'svelte/transition';
+    import { ProductAPI } from '../services/api.js';
+    import { config, apiUrl } from '../config.js';
     
     // Direct API URL
-    const API_URL = 'http://localhost:5000/products';
+    const API_BASE_URL = config.api.base;
     let products = [];
     let newProduct = { name: '', description: '', price: 0, available: true };
     let loading = true;
@@ -96,7 +98,7 @@
           // Remove any temporary IDs or metadata
           const { id, queued_at, ...productData } = product;
           
-          const response = await fetch(API_URL, {
+          const response = await fetch(config.api.products, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -153,7 +155,7 @@
           
           console.log(`Fetching products (attempt ${4-retries}/3)...`);
           
-          const response = await fetch(API_URL, {
+          const response = await fetch(config.api.products, {
             signal: controller.signal,
             headers: {
               'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
@@ -214,7 +216,7 @@
       const checkInterval = setInterval(() => {
         if (offlineMode && pendingProducts.length > 0) {
           // Try to connect to the server periodically
-          fetch(API_URL, { method: 'HEAD', timeout: 2000 })
+          fetch(config.api.products, { method: 'HEAD', timeout: 2000 })
             .then(() => {
               console.log("Server connectivity restored");
               offlineMode = false;
@@ -265,7 +267,7 @@
         const timeoutId = setTimeout(() => controller.abort(), 5000);
         
         try {
-          const response = await fetch(API_URL, {
+          const response = await fetch(config.api.products, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -330,7 +332,7 @@
         
         console.log("Verifying products in database...");
         
-        const response = await fetch(`${API_URL}/ids`, {
+        const response = await fetch(config.api.products + '/ids', {
           signal: controller.signal,
           headers: {
             'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
@@ -415,7 +417,7 @@
       }
 
       try {
-        const response = await fetch('http://192.168.6.53:5000/health', {
+        const response = await fetch(config.api.health, {
           signal: AbortSignal.timeout(5000)
         });
         const online = response.ok;
@@ -484,6 +486,12 @@
     function useOfflineMode() {
       offlineMode = true;
       loadOfflineProducts();
+    }
+
+    function loadOfflineProducts() {
+      // Load fallback products
+      products = fallbackProducts;
+      loading = false;
     }
 </script>
 
