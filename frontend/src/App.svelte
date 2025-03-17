@@ -52,7 +52,7 @@
     
     for (let i = 0; i < maxRetries; i++) {
       try {
-        const response = await fetch('http://192.168.6.53:5000/health', {
+        const response = await fetch(config.api.health, {
           // Use a 5000ms timeout
           signal: AbortSignal.timeout(5000)
         });
@@ -135,7 +135,7 @@
       
       // Check auth state with backend
       try {
-        const response = await fetch('http://localhost:5000/auth/profile', {
+        const response = await fetch(config.api.profile, {
           headers: {
             'Authorization': `Bearer ${tokenBackup}`
           }
@@ -199,7 +199,7 @@
       }));
       
       // Verify token with backend
-      fetch('http://localhost:5000/auth/profile', {
+      fetch(config.api.profile, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -256,7 +256,7 @@
     
     try {
       // Update this URL to match our backend route
-      const response = await fetch('http://localhost:5000/monero/checkout', {
+      const response = await fetch(config.api.checkout, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
