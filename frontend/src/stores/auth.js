@@ -183,4 +183,4 @@ function debounce(func, timeout = 300) {
 }
 
 // Update API URL
-const API_URL = 'http://192.168.6.53:5000'; 
+const API_URL = 'http://192.168.6.53:8080'; 

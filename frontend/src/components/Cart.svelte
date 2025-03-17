@@ -6,7 +6,7 @@
   import { writable } from 'svelte/store';
 
   // Update API base URL
-  const API_BASE_URL = 'http://192.168.6.53:5000';
+  const API_BASE_URL = 'http://192.168.6.53:8080';
 
   // Rename this variable to avoid conflict with imported cart
   let cartData = null;

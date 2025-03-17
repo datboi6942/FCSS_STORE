@@ -27,14 +27,14 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://192.168.6.53:5000',
+        target: 'http://192.168.6.53:8080',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
       },
-      '/cart': 'http://192.168.6.53:5000',
-      '/monero': 'http://192.168.6.53:5000',
+      '/cart': 'http://192.168.6.53:8080',
+      '/monero': 'http://192.168.6.53:8080',
       '/ws': {
-        target: 'ws://192.168.6.53:5000',
+        target: 'ws://192.168.6.53:8080',
         ws: true
       }
     }

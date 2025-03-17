@@ -480,6 +480,11 @@
         console.error("Error in handleBuyNow:", err);
       }
     }
+
+    function useOfflineMode() {
+      offlineMode = true;
+      loadOfflineProducts();
+    }
 </script>
 
 <div class="products-container">
