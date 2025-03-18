@@ -3,6 +3,7 @@
   import { auth } from '../stores/auth.js';
   import { navigate } from 'svelte-routing';
   import { config } from '../config.js';
+  import { api } from '../services/api.js';
   
   let username = '';
   let password = '';
@@ -49,20 +50,7 @@
         return;
       }
       
-      const response = await fetch(`${config.api.auth}/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ username, password })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Login failed');
-      }
-      
-      const userData = await response.json();
+      const userData = await api.auth.login({ username, password });
       
       // Update auth store with user data
       auth.update(state => ({
@@ -112,18 +100,7 @@
       isLoading = true;
       errorMessage = '';
       
-      const response = await fetch(`${config.api.auth}/register`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ username, password })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Registration failed');
-      }
+      await api.auth.register({ username, password });
       
       successMessage = 'Account created successfully! You can now log in.';
       isRegistering = false;

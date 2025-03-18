@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { config } from './config.js';  // MUST be first import
+  import { config } from './config.js';  // Import config at the top
   import { writable } from 'svelte/store';
   import NavBar from './components/NavBar.svelte';
   import Home from './components/Home.svelte';
@@ -33,7 +33,10 @@
   let showShippingForm = false;
   let isCartOpen = false;
   
-  // Check if server is ready before initializing app components
+  // Add api import
+  import { api } from './services/api.js';
+  
+  // Update checkServerReadiness function
   async function checkServerReadiness() {
     // Check if we have a cached result from a recent health check (15 seconds)
     const cached = sessionStorage.getItem('serverReadyCached');
@@ -53,19 +56,14 @@
     
     for (let i = 0; i < maxRetries; i++) {
       try {
-        const response = await fetch(config.api.health, {
-          // Use a 5000ms timeout
-          signal: AbortSignal.timeout(5000)
-        });
-        if (response.ok) {
-          console.log(`Server is ready (attempt ${i + 1})`);
-          isReady = true;
-          break;
-        }
+        const result = await api.health.check();
+        console.log(`Server is ready (attempt ${i + 1})`);
+        isReady = true;
+        break;
       } catch (err) {
         console.log(`Health check attempt ${i + 1} failed: ${err}`);
       }
-      // Increase delay with each retry (exponential backoff)
+      // Increase delay with each retry
       await new Promise(resolve => setTimeout(resolve, baseDelay * (i + 1)));
     }
     
@@ -136,27 +134,18 @@
       
       // Check auth state with backend
       try {
-        const response = await fetch(config.api.profile, {
-          headers: {
-            'Authorization': `Bearer ${tokenBackup}`
-          }
-        });
+        const userData = await api.auth.profile();
         
-        if (response.ok) {
-          const userData = await response.json();
-          // Update auth with user data
-          auth.update(state => ({
-            ...state,
-            user: userData,
-            isAdmin: userData.role === 'admin'
-          }));
-          console.log("Successfully restored user profile from token");
-        } else {
-          // Token is invalid, clear it
-          localStorage.removeItem('auth_token_backup');
-        }
+        // Update auth with user data
+        auth.update(state => ({
+          ...state,
+          user: userData,
+          isAdmin: userData.role === 'admin'
+        }));
+        console.log("Successfully restored user profile from token");
       } catch (e) {
         console.error("Error restoring auth from token:", e);
+        localStorage.removeItem('auth_token_backup');
       }
     }
 
@@ -245,7 +234,7 @@
     showShippingForm = true;
   }
 
-  // Add this function to handle shipping form submission
+  // Update handleShippingSubmit
   async function handleShippingSubmit(event) {
     const checkoutData = {
       ...event.detail,
@@ -256,25 +245,8 @@
     console.log('Submitting checkout data:', checkoutData);
     
     try {
-      // Update this URL to match our backend route
-      const response = await fetch(config.api.checkout, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify(checkoutData)
-      });
+      const data = await api.monero.checkout(checkoutData);
       
-      console.log('Response status:', response.status);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Error response body:', errorText);
-        throw new Error(`HTTP error! status: ${response.status}, response: ${errorText}`);
-      }
-      
-      const data = await response.json();
       console.log('Checkout response:', data);
       
       if (data.success) {
@@ -366,6 +338,9 @@
     </Route>
     <Route path="/checkout/monero">
       <MoneroCheckout />
+    </Route>
+    <Route path="/config">
+      <ConfigTester />
     </Route>
     <Route path="*" let:location>
       {#if location && location.pathname}

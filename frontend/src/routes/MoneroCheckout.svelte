@@ -5,6 +5,7 @@
   import { auth } from '../stores/auth.js';
   import { navigate } from 'svelte-routing';
   import { config } from '../config.js';
+  import { api } from '../services/api.js';
   
   export const params = {}; // For external reference
   
@@ -34,25 +35,7 @@
       if (!order_id || !pollingEnabled) return;
       
       try {
-        const response = await fetch(`${config.api.base}/monero/check_payment/${order_id}`);
-        
-        // Check if the response is OK
-        if (!response.ok) {
-          // Just log the error but don't throw - this allows polling to continue
-          console.error(`Error response: ${response.status} ${response.statusText}`);
-          return;
-        }
-        
-        const text = await response.text();
-        
-        // Try to parse the response as JSON
-        let data;
-        try {
-          data = JSON.parse(text);
-        } catch (e) {
-          console.error(`Invalid JSON response: ${text}`);
-          return;
-        }
+        const data = await api.monero.checkPayment(order_id);
         
         // Process the data
         if (data.success && data.status) {
@@ -91,18 +74,9 @@
       try {
         const checkoutData = JSON.parse(checkoutDataString);
         
-        // Send checkout request with shipping info
-        fetch(`${config.api.cart}/checkout`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(localStorage.getItem('jwt') ? { 'Authorization': `Bearer ${localStorage.getItem('jwt')}` } : {})
-          },
-          body: JSON.stringify(checkoutData)
-        })
-        .then(response => response.json())
-        .then(data => {
-          if (data.success) {
+        // Use API service for checkout
+        api.cart.checkout(checkoutData)
+          .then(data => {
             // Set payment details and order ID
             paymentDetails = data;
             order_id = data.order_id;
@@ -122,15 +96,11 @@
             
             // Try to set up WebSocket or fall back to polling
             setupWebSocket();
-          } else {
-            error = data.error || 'Failed to process checkout';
-          }
-          loading = false;
-        })
-        .catch(err => {
-          error = 'Network error: ' + err.message;
-          loading = false;
-        });
+          })
+          .catch(err => {
+            error = 'Network error: ' + err.message;
+            loading = false;
+          });
         
         return; // Exit function after initiating checkout
       } catch (e) {

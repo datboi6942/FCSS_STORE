@@ -4,7 +4,7 @@
     import ProductCard from './ProductCard.svelte';
     import { cart, cartTotal } from '../stores/cart.js';
     import { fade } from 'svelte/transition';
-    import { ProductAPI } from '../services/api.js';
+    import { api } from '../services/api.js';
     import { config, apiUrl } from '../config.js';
     
     // Direct API URL
@@ -147,28 +147,9 @@
       
       while (retries > 0) {
         try {
-          loading = true;
-          error = null;
-          
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 8000);
-          
           console.log(`Fetching products (attempt ${4-retries}/3)...`);
           
-          const response = await fetch(config.api.products, {
-            signal: controller.signal,
-            headers: {
-              'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
-            }
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (!response.ok) {
-            throw new Error(`Server returned ${response.status}`);
-          }
-          
-          const data = await response.json();
+          const data = await api.products.list();
           console.log(`Got products: ${data.length}`);
           
           // Success - update products and exit retry loop
@@ -262,56 +243,16 @@
           return;
         }
         
-        // For online mode, try the API with a timeout
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        // For online mode, use the API service
+        const serverProduct = await api.products.add(productToAdd);
         
-        try {
-          const response = await fetch(config.api.products, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': $auth.token ? `Bearer ${$auth.token}` : ''
-            },
-            body: JSON.stringify(productToAdd),
-            signal: controller.signal
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (!response.ok) {
-            throw new Error('Failed to add product');
-          }
-          
-          // If successful, get the product data from the response
-          try {
-            const serverProduct = await response.json();
-            // Add the server-assigned ID and other properties
-            products = [...products, serverProduct];
-          } catch (err) {
-            // If we can't parse the response, just add the product with a temp ID
-            const tempId = Date.now().toString();
-            products = [...products, {...productToAdd, id: tempId}];
-          }
-          
-          // Reset form
-          newProduct = { name: '', description: '', price: 0, available: true };
-          
-          alert("Product added successfully!");
-        } catch (err) {
-          if (err.name === 'AbortError') {
-            // If server request times out, add to pending queue
-            console.log("Server timeout, adding product to pending queue");
-            offlineMode = true;
-            addToPendingQueue(productToAdd);
-            alert("Server connection timed out. Product saved to queue and will be synchronized when connection is restored.");
-            
-            // Reset form
-            newProduct = { name: '', description: '', price: 0, available: true };
-          } else {
-            throw err;
-          }
-        }
+        // Add the server-assigned product
+        products = [...products, serverProduct];
+        
+        // Reset form
+        newProduct = { name: '', description: '', price: 0, available: true };
+        
+        alert("Product added successfully!");
       } catch (err) {
         error = err.message;
         console.error("Error adding product:", err);
@@ -417,15 +358,12 @@
       }
 
       try {
-        const response = await fetch(config.api.health, {
-          signal: AbortSignal.timeout(5000)
-        });
-        const online = response.ok;
-
+        const online = await api.health.check();
+        
         // Cache the result with the current timestamp
-        sessionStorage.setItem('productsHealthStatus', online.toString());
+        sessionStorage.setItem('productsHealthStatus', 'true');
         sessionStorage.setItem('productsHealthTimestamp', Date.now().toString());
-
+        
         return online;
       } catch (err) {
         console.error("Products health check error:", err);
